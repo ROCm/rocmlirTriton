@@ -66,6 +66,7 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       ArchAttr::getMnemonic(),
       KernelAttr::getMnemonic(),
       ElementwiseAttr::getMnemonic(),
+      ReduceAttr::getMnemonic(),
       ConvKernelAttr::getMnemonic(),
       NumCUAttr::getMnemonic(),
       NumChipletsAttr::getMnemonic(),

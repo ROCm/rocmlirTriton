@@ -649,6 +649,42 @@ def Rock_Elementwise : Rock_Attr<"Elementwise"> {
   }];
 }
 
+def Rock_Reduce : Rock_Attr<"Reduce"> {
+  let mnemonic = "rock.reduce";
+  let description = [{
+    Marker attribute indicating that a kernel function is a standalone reduce
+    kernel (no GEMM/conv/attention root). Mutually exclusive with
+    `rock.elementwise`: a reduce kernel may fuse elementwise ops ahead of its
+    `rock.reduce`, but it is lowered by the reduce pipeline.
+  }];
+}
+
+def Rock_ReduceParamsAttr : Rock_Attr<"ReduceParams"> {
+  let mnemonic = "reduce_params";
+  let description = [{
+    The schedule of a standalone `rock.reduce`.
+
+    `rowsPerBlock` x `colsPerBlock` is the tile one workgroup loads per
+    iteration, with the reduction running along `colsPerBlock`. That shape is
+    the whole schedule: `tritongpu-coalesce` derives the blocked layout of the
+    load from it, and the layout is what decides whether the `tt.reduce` the
+    tile feeds combines within a thread (free), across the lanes of a wave
+    (DPP), or across waves (LDS plus a barrier). See
+    `docs/reduce-kernel-plan.md` for the table.
+
+    `numWaves` must agree with the `numWarps` the Triton pipeline is run with,
+    since that sets both the real launch block size and the lane/wave split the
+    tile is chosen against.
+
+    A `colsPerBlock` smaller than the reduction extent means the lowering has
+    to loop over the reduction axis.
+  }];
+  let parameters = (ins "int64_t":$rowsPerBlock, "int64_t":$colsPerBlock,
+      "int64_t":$numWaves);
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {
   let mnemonic = "rock.conv_kernel";
   let description = [{

@@ -158,9 +158,19 @@ def Rock_ReduceOp
     : Rock_Op<"reduce", [Pure, AllElementTypesMatch<["in", "result"]>,
                          DeclareOpInterfaceMethods<InferTypeOpInterface>]>,
       Arguments<(ins Arg<AnyRankedTensor, "input">:$in,
-          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis)>,
+          ReduceMethodAttr:$reduceMethod, IndexAttr:$axis,
+          OptionalAttr<Rock_ReduceParamsAttr>:$params)>,
       Results<(outs AnyRankedTensor:$result)> {
   let summary = "Axes-wide reduction operation";
+  let description = [{
+    Reduces `in` along `axis`, keeping that axis in the result with a length of
+    one.
+
+    `params` is the schedule a standalone reduce kernel is lowered with. It is
+    the counterpart of `rock.gemm`'s `params`: filled in by
+    `rock-lower-reduce-to-blockwise` when it is absent, validated rather than
+    overridden when it is present, and gone once the op has been lowered.
+  }];
   let hasVerifier = 1;
   let assemblyFormat = [{
     $reduceMethod $in attr-dict `:` type($in) `->` type($result)

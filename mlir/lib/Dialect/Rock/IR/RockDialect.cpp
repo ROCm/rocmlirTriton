@@ -1960,6 +1960,31 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
 }
 
 //===-----------------------------------------------------===//
+// ReduceParamsAttr
+//===-----------------------------------------------------===//
+
+// Only the structural invariants are checked here. Whether a tile actually
+// suits a given reduction is arch-dependent (it takes the wave size, the
+// element width and the reduction extent), so those checks live in
+// `rock-lower-reduce-to-blockwise`, which has all three.
+LogicalResult
+ReduceParamsAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                         int64_t rowsPerBlock, int64_t colsPerBlock,
+                         int64_t numWaves) {
+  if (rowsPerBlock <= 0 || colsPerBlock <= 0 || numWaves <= 0)
+    return emitError() << "rowsPerBlock, colsPerBlock and numWaves must be "
+                          "positive, got "
+                       << rowsPerBlock << ", " << colsPerBlock << " and "
+                       << numWaves;
+  // Triton tensor shapes have to be powers of two, and the tile becomes one.
+  if (!llvm::isPowerOf2_64(rowsPerBlock) || !llvm::isPowerOf2_64(colsPerBlock))
+    return emitError() << "rowsPerBlock and colsPerBlock must be powers of "
+                          "two, got "
+                       << rowsPerBlock << " and " << colsPerBlock;
+  return success();
+}
+
+//===-----------------------------------------------------===//
 // ReduceOp
 //===-----------------------------------------------------===//
 
