@@ -225,11 +225,132 @@ Phase A is the `K == 1` case, so this is strictly additive.
 
 ## Phase C: deferred
 
-- Transposed / strided inputs, where the reduce axis is last logically but not
-  in memory.
-- Split-reduce plus atomics (or a two-kernel decomposition) for a small `M`
-  with a huge `N`.
-- Per-kernel `numWaves` plumbed into `TritonOptions`.
-- Promote `chooseReduceParams` into a `rock-affix-reduce-params` pass with a
-  `perf_config` string and tuning-driver support.
-- Unify `rock-regularize-reduce` with `rock-regularize-elementwise`.
+### C1. A strided reduce axis, or: where the `lane` schedule comes from
+
+`rock-lower-reduce-to-blockwise` rejects an input whose reduced axis is not
+the contiguous one, because the tile it would pick is the wrong way round.
+This is the case MIGraphX serves with its `lane` kernel, and it is the one
+remaining schedule the tile formula cannot express.
+
+The reason the tile has to change is that `tritongpu-coalesce` takes `order`
+from the pointer's `AxisInfo`, not from our axis numbering. When the reduced
+axis is strided the rows are what is contiguous, so `order` becomes `[0, 1]`
+and the `BlockedEncodingAttr` builder spends its lanes on the *row* axis
+first. Everything in the Phase A table flips.
+
+Measured on gfx942 with 4 waves of 64 lanes (so 256 threads and a
+`vecWidth` of 4 for f32), on an f32 tile whose element `(r, c)` lives at
+offset `c * R + r`:
+
+| tile `R x C` | `threadsPerWarp` | `warpsPerCTA` | LDS ops | DPP ops |
+| --- | --- | --- | --- | --- |
+| `64 x 16` | `[16, 4]` | `[1, 4]` | 16 | 0 |
+| `128 x 16` | `[32, 2]` | `[1, 4]` | 28 | 8 |
+| `256 x 16` | `[64, 1]` | `[1, 4]` | 28 | 8 |
+| `1024 x 16` | `[64, 1]` | `[4, 1]` | **0** | **0** |
+| `4096 x 16` | `[64, 1]` | `[4, 1]` | **0** | **0** |
+
+Every row has `sizePerThread = [4, 1]` and `order = [0, 1]`: the vector is
+spent on rows, and rows are the fast axis.
+
+So the rule for a strided reduction is the mirror image of the contiguous
+one. Rows have to absorb every thread before the reduced axis gets any,
+which happens exactly when
+
+```
+rowsPerBlock >= numThreads * vecWidth
+```
+
+since the builder gives the row axis `clamp(numThreads, 1, R / sizePerThread)`
+threads and `sizePerThread` along rows is `vecWidth`. Below that threshold the
+leftover warps land on the reduced axis and the reduction pays for LDS; at or
+above it each thread owns whole rows and the reduction is a handful of `addf`
+instructions on registers. On the table above `1024 = 256 * 4` is where it
+switches over, and the switch is abrupt: at `256 x 16` the reduction still
+costs 28 LDS operations and 8 cross-lane shuffles, at `1024 x 16` it costs
+neither.
+
+Three consequences for the implementation:
+
+- **Detection is already done.** `checkLastAxisIsContiguous` computes the
+  stride of the reduced axis by folding the composed map at two points, and
+  currently only compares it against one. Returning the number instead of
+  failing is all the analysis this needs.
+- **It depends on Phase B.** A thread holds `vecWidth * colsPerBlock`
+  elements, so with `rowsPerBlock` pinned at `numThreads * vecWidth` the
+  register footprint is set entirely by the reduced extent. Anything but a
+  short reduction has to be cut into chunks, which is the loop Phase B adds.
+  Phase C1 should not be attempted first.
+- **Inputs can disagree.** With several leaf inputs, one may be contiguous
+  along the reduced axis and another strided, and no single tile suits both.
+  MIGraphX settles this by byte dominance: it only consults inputs whose size
+  is within a factor of four of the largest, on the grounds that the small
+  ones are served from cache either way. The same tie-break fits here, and
+  the leaves are already collected.
+
+### C2. Too few rows to fill the device
+
+`gridSize` is `ceil(M / rowsPerBlock)`, so a reduction of a few very long rows
+occupies a few workgroups on a device with hundreds of compute units. Phase A
+accepts this and runs slowly; the fix costs the single-writer property that
+the rest of the design leans on.
+
+Two ways out:
+
+- **Split the reduced axis across workgroups and accumulate atomically.** The
+  zero-initialisation this needs already exists: the reduce converter in
+  `TosaToRock` attaches `rock.prefill` with a zero to the kernel result, and
+  the attribute is carried through `RockTensorToTritonPtr` into the module
+  attribute `RockEmitGpuBinary` turns into a prefill request. `rock.store`
+  already has an `atomic_add` method. The cost is that a float atomic
+  accumulates in whatever order the workgroups retire, so results stop being
+  reproducible run to run, which the CPU verifier comparisons would have to
+  tolerate.
+- **Two kernels, partials through a workspace.** Deterministic given a fixed
+  split, but the pipeline has no notion of a scratch allocation to put the
+  partials in, so this is the larger change.
+
+MIGraphX draws the line at `outputs < cuCount * 1024`, and splits with a
+threshold of 8192 elements and at most 16 ways
+(`split_reduce` in `jit/reduce.cpp`).
+
+### C3. `numWaves` reaching `TritonOptions`
+
+`numWaves` is a pass option today, defaulting to 4 to match
+`TritonOptions::numWarps`, and nothing enforces the agreement. The two must
+match: `numWarps` sets the launch block size in `compileUtils.cpp`
+(`info.blockSize = numWarps * warpSize`) as well as the lane and warp split
+the tile is chosen against, so a mismatch silently mis-tunes the kernel and
+mis-reports its block size.
+
+The channel for this already exists but is GEMM-shaped: the driver calls
+`fillCompilationConfigs`, which reads `numWaves` out of a perf config and
+writes it into `TritonOptions`, for every op implementing
+`RockGemmWrapperInterface`. A reduce kernel has no such op, which is why
+`numWarps` keeps its default. Either the driver learns to look at
+`rock.reduce_params`, or the attribute implements the tuning interface. The
+knob is worth having mainly for long reductions, where more waves means more
+parallelism per row and fewer trips through the Phase B loop.
+
+### C4. The layout conversion after a many-row reduction
+
+When the tile holds several rows, the reduction result is laid out across the
+warps that produced it, while the store wants the plain 1-D layout
+`tritongpu-coalesce` picks for its pointer tensor. Triton bridges the two with
+a `ttg.convert_layout`, which costs one round trip through LDS. For a
+`64 x 16` f32 tile that is 256 bytes against the 4 KiB the tile itself loads,
+and it is off the reduction's critical path, so Phase A leaves it alone.
+Making the store side agree with the layout the reduction produces would
+remove it.
+
+### C5. Smaller items
+
+- Promote `chooseReduceParams` into a `rock-affix-reduce-params` pass, so the
+  lowering can require `rock.reduce_params` rather than compute it, mirroring
+  `rock-affix-params` and `rock-gemm-to-gridwise`. That is also where a
+  `perf_config` string and tuning-driver support would go.
+- Unify `rock-regularize-reduce` with `rock-regularize-elementwise`; the two
+  patterns differ only in the marker they gate on.
+- Reductions other than `sum`. `max` needs the `-inf` neutral fill, which
+  `PreserveMaskedLoadSemantics` already emits for a max
+  `rock.blockwise_reduce`, plus a decision about NaN semantics.
