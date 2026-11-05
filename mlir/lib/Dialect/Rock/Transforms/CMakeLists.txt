@@ -46,6 +46,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeInput.cpp
   LowerLoads.cpp
   LowerReduce.cpp
+  LowerReduceToBlockwise.cpp
   LowerStores.cpp
   RegularizeInterGemmFusion.cpp
   RegularizeElementwise.cpp

@@ -151,6 +151,41 @@ def RockRegularizeReducePass : Pass<"rock-regularize-reduce", "::mlir::func::Fun
   let summary = "Push rock.transform ops to input";
 }
 
+def RockLowerReduceToBlockwisePass
+    : Pass<"rock-lower-reduce-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "Tile a standalone rock.reduce and lower it to a blockwise "
+                "reduction";
+  let description = [{
+    Lowers the `rock.reduce` of a standalone reduce kernel into a tiled
+    `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
+
+    The schedule is the tile shape `rowsPerBlock x colsPerBlock` recorded in
+    the op's `rock.reduce_params`. There is no algorithm choice beyond it:
+    `tritongpu-coalesce` derives the blocked layout of the load from the tile,
+    and that layout is what decides whether the reduction combines inside a
+    thread, across the lanes of a wave, or across waves through LDS. The pass
+    fills `params` in when the op does not carry one, and validates rather than
+    overrides one that it does.
+
+    This pass only accepts what it can lower correctly and emits an error for
+    everything else: a single `sum` reduction over the last axis, static
+    shapes, no elementwise op between the reduction and its `rock.store`, and
+    inputs that are contiguous along the reduced axis.
+  }];
+  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
+                           "func::FuncDialect", "triton::TritonDialect"];
+  let options = [
+    Option<"arch", "arch", "std::string", /*default=*/"\"\"",
+           "The GPU architecture, which fixes the wave size">,
+    Option<"numWaves", "numWaves", "int64_t", /*default=*/"4",
+           "Waves per workgroup. Must match the `numWarps` the Triton "
+           "pipeline runs with, which sets the real launch block size">,
+    Option<"maxTileCols", "maxTileCols", "int64_t", /*default=*/"2048",
+           "Upper bound on the reduced-axis extent of a tile, which caps the "
+           "register footprint of one workgroup">,
+  ];
+}
+
 def RockElementwiseToGridwisePass
     : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
   let summary =
