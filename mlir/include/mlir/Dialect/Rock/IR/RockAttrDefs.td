@@ -670,6 +670,11 @@ def Rock_Debug : Rock_Attr<"Debug"> {
     release builds skip on the MIGraphX compile path: the MLIR pass-manager
     verifier, and LLVM IR verification before Triton-to-HSACO codegen.
     MIGraphX sets it from `MIGRAPHX_MLIR_DEBUG`.
+def Rock_Elementwise : Rock_Attr<"Elementwise"> {
+  let mnemonic = "rock.elementwise";
+  let description = [{
+    Marker attribute indicating that a kernel function is a standalone
+    elementwise kernel (no GEMM/conv/attention root).
   }];
 }
 
