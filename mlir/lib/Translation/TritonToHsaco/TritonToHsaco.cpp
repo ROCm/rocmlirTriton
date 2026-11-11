@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -136,7 +137,7 @@ constexpr std::array<EmbeddedDeviceLibrary, 2> embeddedDeviceLibraries = {
 /// Deliberate divergence from upstream Triton, which verifies unconditionally
 /// in llvm.cc's to_module() and its codegen pipeline: two full IR walks over
 /// IR our own lowering just produced. Keep the check only in assert-enabled
-/// builds.
+/// builds, unless the module carries `rock.debug`.
 #ifndef NDEBUG
 constexpr bool kVerifyLLVMIR = true;
 #else
@@ -709,10 +710,12 @@ std::unique_ptr<llvm::Module>
 mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
            const mlir::rock::TritonToHsacoOptions &options) {
   // llvm.cc's to_module() calls translateModuleToLLVMIR with verification
-  // always enabled, see kVerifyLLVMIR.
+  // always enabled. Release builds skip that walk unless `rock.debug` is set.
+  const bool verifyLLVMIR =
+      kVerifyLLVMIR || mlir::rock::moduleRequestsDebug(module);
   std::unique_ptr<llvm::Module> llvmModule =
       translateModuleToLLVMIR(module, llvmContext, "LLVMDialectModule",
-                              /*disableVerification=*/!kVerifyLLVMIR);
+                              /*disableVerification=*/!verifyLLVMIR);
   if (!llvmModule) {
     llvm::errs() << "Failed to translate module to LLVM IR\n";
     return nullptr;
@@ -831,6 +834,15 @@ mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
 
   cleanupBitcodeMetadata(*llvmModule);
   disablePrintInline(*llvmModule);
+
+  // The legacy codegen pipeline verified again here (createVerifierPass)
+  // before emitting machine code. That pass left with the move to
+  // triton_amd_codegen; this is the same check, still off in release unless
+  // `rock.debug` (or an assert build) asked for it.
+  if (verifyLLVMIR && llvm::verifyModule(*llvmModule, &llvm::errs())) {
+    llvm::errs() << "LLVM IR verification failed\n";
+    return nullptr;
+  }
   return llvmModule;
 }
 

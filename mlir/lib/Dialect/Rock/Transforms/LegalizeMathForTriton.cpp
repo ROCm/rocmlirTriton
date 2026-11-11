@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/GetRockInfo.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
@@ -267,7 +268,7 @@ struct RockLegalizeMathForTritonPass
     StringAttr arch = rock::getArchValueOnFunc(func);
 
     MLIRContext *ctx = &getContext();
-    bool allowApprox = !disableFastMath;
+    bool allowApprox = !rock::disablesFastMath(func, disableFastMath);
 
     RewritePatternSet patterns(ctx);
     patterns.add<TanhLowering>(

@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Rock/Pipelines/Pipelines.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/Dialect/Rock/utility/fusionUtils.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
@@ -1480,7 +1481,8 @@ static LogicalResult runTuningLoop(ModuleOp source) {
                                            tuningSpaceKind,
                                            numCompileThreads,
                                            benchmarkConfig,
-                                           verifyPasses,
+                                           verifyPasses ||
+                                               rock::moduleRequestsDebug(source),
                                            flushLastLevelCache,
                                            perfConfigTimeout,
                                            gpuRunTimeout,

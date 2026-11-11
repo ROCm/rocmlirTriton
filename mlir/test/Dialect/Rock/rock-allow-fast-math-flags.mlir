@@ -191,6 +191,36 @@ module @perop_tests {
     %1 = arith.maxnumf %0, %b : f32
     return %1 : f32
   }
+
+  // `rock.disable-nnan` withholds only `nnan`. The reciprocal flags on divf
+  // stay, and maxnumf keeps `nsz` so the ±0 peephole is still available. What
+  // is gone is the bit RockFoldClampToTriton needs to fold a clamp into
+  // tt.clampf.
+  // CHECK-LABEL: func.func @disable_nnan_omits_only_nnan
+  // CHECK: arith.divf %{{.*}}, %{{.*}} fastmath<nsz,arcp,afn> : f32
+  // CHECK: arith.maxnumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  // CHECK: arith.minnumf %{{.*}}, %{{.*}} fastmath<nsz> : f32
+  func.func @disable_nnan_omits_only_nnan(%a: f32, %b: f32) -> f32
+      attributes {rock.kernel, "rock.disable-nnan"} {
+    %0 = arith.divf %a, %b : f32
+    %1 = arith.maxnumf %0, %b : f32
+    %2 = arith.minnumf %1, %a : f32
+    return %2 : f32
+  }
+
+  // `rock.disable-fast-math` is the function-attribute spelling of
+  // `-disable-fast-math`. rocmlir-opt runs this pass on its own, so the pass
+  // itself has to skip the function; the driver also drops the pass from the
+  // pipeline when it sees the attribute.
+  // CHECK-LABEL: func.func @disable_fast_math_attr_skips_flags
+  // CHECK: arith.divf %{{[^ ]+}}, %{{[^ ]+}} : f32
+  // CHECK: arith.addf %{{[^ ]+}}, %{{[^ ]+}} : f32
+  func.func @disable_fast_math_attr_skips_flags(%a: f32, %b: f32) -> f32
+      attributes {rock.kernel, "rock.disable-fast-math"} {
+    %0 = arith.divf %a, %b : f32
+    %1 = arith.addf %0, %b : f32
+    return %1 : f32
+  }
 }
 
 // End-to-end test (top-level so the migraphx pipeline picks it up).

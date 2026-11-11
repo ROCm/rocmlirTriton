@@ -186,7 +186,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   MlirPassManager highLevelPm = mlirPassManagerCreate(ctx);
   MlirPassManager backendPm = mlirPassManagerCreate(ctx);
   // Call high level pipeline on root module.
-  mlirMIGraphXAddHighLevelPipeline(highLevelPm);
+  mlirMIGraphXAddHighLevelPipeline(highLevelPm, module);
   if (mlirLogicalResultIsFailure(
           mlirPassManagerRunOnOp(highLevelPm, moduleOp))) {
     printf("Running high-level pipeline failed\n");
@@ -233,7 +233,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
     mlirRockTuningSetFromStr(tuningClone,
                              mlirStringRefCreateFromCString(paramStr));
     MlirPassManager checkPm = mlirPassManagerCreate(ctx);
-    if (!mlirMIGraphXAddBackendPipeline(checkPm, &opts)) {
+    if (!mlirMIGraphXAddBackendPipeline(checkPm, &opts, tuningClone)) {
       mlirPassManagerDestroy(checkPm);
       mlirModuleDestroy(tuningClone);
       continue;
@@ -272,7 +272,7 @@ static bool constructAndTraverseIr(MlirContext ctx) {
   mlirRockTuningSpaceDestroy(tuningSpace);
 
   // Run compilation pipeline on tuned config.
-  if (!mlirMIGraphXAddBackendPipeline(backendPm, &opts)) {
+  if (!mlirMIGraphXAddBackendPipeline(backendPm, &opts, module)) {
     printf("Errors in building backend pipeline\n");
     return false;
   }
@@ -416,13 +416,14 @@ checkPipelineConstructionPreservesThreading(MlirDialectRegistry registry) {
   bool preserved = mlirContextGetNumThreads(ctx) == 1;
 
   MlirPassManager highLevelPm = mlirPassManagerCreate(ctx);
-  mlirMIGraphXAddHighLevelPipeline(highLevelPm);
+  mlirMIGraphXAddHighLevelPipeline(highLevelPm, MlirModule{});
   preserved = preserved && mlirContextGetNumThreads(ctx) == 1;
 
   MlirPassManager backendPm = mlirPassManagerCreate(ctx);
   MlirMIGraphXBackendOptions opts = {"gfx90a:sramecc+:xnack-",
                                      "gemm:v1:64,64,64,1,1,4,16,1,2,0,0", 3};
-  bool backendPipelineAdded = mlirMIGraphXAddBackendPipeline(backendPm, &opts);
+  bool backendPipelineAdded =
+      mlirMIGraphXAddBackendPipeline(backendPm, &opts, MlirModule{});
   // CHECK: backend pipeline construction succeeded : 1
   printf("backend pipeline construction succeeded : %d\n",
          backendPipelineAdded);
