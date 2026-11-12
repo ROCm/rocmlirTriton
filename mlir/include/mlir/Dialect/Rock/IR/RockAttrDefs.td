@@ -641,6 +641,35 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   }];
 }
 
+def Rock_DisableFastMath : Rock_Attr<"DisableFastMath"> {
+  let mnemonic = "rock.disable-fast-math";
+  let description = [{
+    Unit attribute on a kernel function. Selects the same lowering as
+    `-disable-fast-math`: skip fast-math flags, keep IEEE NaN semantics for
+    min/max/clamp and float-to-int casts, and keep every f32 dot at IEEE
+    precision. MIGraphX sets it from `MIGRAPHX_MLIR_DISABLE_FAST_MATH`.
+  }];
+}
+
+def Rock_DisableNnan : Rock_Attr<"DisableNnan"> {
+  let mnemonic = "rock.disable-nnan";
+  let description = [{
+    Unit attribute on a kernel function. Suppresses only the `nnan` fast-math
+    flag on `arith.minnumf` and `arith.maxnumf`. That flag is what lets a clamp
+    pair fold into `tt.clampf`. The other fast-math flags (`arcp`, `contract`,
+    `reassoc`, `nsz`, `afn`) still apply, and the no-NaN min/max mode stays in
+    place. Implied by `rock.disable-fast-math`, which skips the flag pass
+    entirely. MIGraphX sets it from `MIGRAPHX_MLIR_DISABLE_NNAN`.
+  }];
+}
+
+def Rock_Debug : Rock_Attr<"Debug"> {
+  let mnemonic = "rock.debug";
+  let description = [{
+    Unit attribute on a kernel function. Re-enables the IR verifiers that
+    release builds skip on the MIGraphX compile path: the MLIR pass-manager
+    verifier, and LLVM IR verification before Triton-to-HSACO codegen.
+    MIGraphX sets it from `MIGRAPHX_MLIR_DEBUG`.
 def Rock_Elementwise : Rock_Attr<"Elementwise"> {
   let mnemonic = "rock.elementwise";
   let description = [{

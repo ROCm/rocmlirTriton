@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/MIGraphXToTosa/MIGraphXToTosa.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MIGraphX/IR/MIGraphX.h"
@@ -77,7 +78,8 @@ void MIGraphXToTosa::runOnOperation() {
   migraphx::populateMIGraphXToTosaDialectConversion(bodyConversionTarget,
                                                     &bodyTypeConverter);
   migraphx::populateMIGraphXToTosaConversionPatterns(
-      bodyPatterns, bodyTypeConverter, disableFastMath);
+      bodyPatterns, bodyTypeConverter,
+      rock::disablesFastMath(func, disableFastMath));
   if (failed(applyPartialConversion(func, bodyConversionTarget,
                                     std::move(bodyPatterns))))
     return signalPassFailure();

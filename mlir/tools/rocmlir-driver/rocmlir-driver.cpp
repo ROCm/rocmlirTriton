@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/RockTuning.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/InitRocMLIRCLOptions.h"
@@ -202,6 +203,9 @@ static LogicalResult
 runWithDetach(ModuleOp module, StringRef pipelineName,
               mlir::function_ref<bool(func::FuncOp)> detachPredicate,
               mlir::function_ref<void(PassManager &)> buildPipeline) {
+  // Read this before detaching: `rock.debug` lives on the kernel function,
+  // which is not in `module` for the host run.
+  const bool debugVerifiers = rock::moduleRequestsDebug(module);
   DetachedFuncs detached = detachFuncs(module, detachPredicate);
 
   bool hasTargetFuncs =
@@ -212,7 +216,10 @@ runWithDetach(ModuleOp module, StringRef pipelineName,
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
   applyDefaultTimingPassManagerCLOptions(pm);
-  pm.enableVerifier(!disableVerifyPasses);
+  // `rock.debug` turns the verifier back on even under
+  // `-disable-verify-passes`. Release MIGraphX builds are the path that
+  // actually ships with it off; the attribute is how that path opts back in.
+  pm.enableVerifier(!disableVerifyPasses || debugVerifiers);
   buildPipeline(pm);
 
   if (dumpPipelines) {
@@ -242,7 +249,7 @@ runKernelPipeline(StringRef archName, ModuleOp m,
   if (failed(applyPassManagerCLOptions(pm)))
     return failure();
   applyDefaultTimingPassManagerCLOptions(pm);
-  pm.enableVerifier(!disableVerifyPasses);
+  pm.enableVerifier(!disableVerifyPasses || rock::moduleRequestsDebug(m));
   bool needArch = kernelPipelineSet.contains("binary");
   RocmDeviceName devName;
   if (archName.empty() && needArch) {
@@ -402,10 +409,14 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
             })))
       return failure();
   }
+  // `rock.disable-fast-math` on a kernel function is the MIGraphX spelling of
+  // `-disable-fast-math`. The host run stays pinned to IEEE below.
+  const bool kernelNoFastMath =
+      clOpts.disableFastMath || rock::kernelDisablesFastMath(module);
   if (kernelPipelineSet.contains("migraphx")) {
     if (failed(runWithDetach(
             module, "Kernel MIGraphX", isHost, [&](PassManager &pm) {
-              migraphx::addMIGraphXPipeline(pm, clOpts.disableFastMath);
+              migraphx::addMIGraphXPipeline(pm, kernelNoFastMath);
             })))
       return failure();
   }
@@ -426,7 +437,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
   }
   if (kernelPipelineSet.contains("highlevel")) {
     highlevelOpts.disableRock = false;
-    highlevelOpts.disableFastMath = clOpts.disableFastMath;
+    highlevelOpts.disableFastMath = kernelNoFastMath;
     if (failed(runWithDetach(module, "Kernel Highlevel", isHost, runHighlevel)))
       return failure();
   }
@@ -451,7 +462,7 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
       }
     }
     if (failed(runKernelPipeline(onlyArch, module, kernelPipelineSet,
-                                 clOpts.disableFastMath)))
+                                 kernelNoFastMath)))
       return failure();
   }
 
@@ -477,7 +488,8 @@ static LogicalResult runMLIRPasses(ModuleOp &module,
     if (failed(applyPassManagerCLOptions(pm)))
       return failure();
     applyDefaultTimingPassManagerCLOptions(pm);
-    pm.enableVerifier(!disableVerifyPasses);
+    pm.enableVerifier(!disableVerifyPasses ||
+                      rock::moduleRequestsDebug(module));
     auto errorHandler = [&](const Twine &msg) {
       emitError(UnknownLoc::get(module.getContext())) << msg;
       return failure();

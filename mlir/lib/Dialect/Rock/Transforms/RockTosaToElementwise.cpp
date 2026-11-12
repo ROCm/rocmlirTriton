@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/builderUtils.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -708,8 +709,9 @@ struct RockTosaToElementwise
     patterns
         .add<AbsConverter, NegateConverter, MulConverter, ReciprocalConverter,
              SigmoidConverter, SelectConverter, ClampConverter>(ctx);
-    patterns.add<CastConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
-    patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!disableFastMath);
+    const bool noFastMath = rock::disablesFastMath(func, disableFastMath);
+    patterns.add<CastConverter>(ctx, /*assumeNoNaNs=*/!noFastMath);
+    patterns.add<CustomOpConverter>(ctx, /*assumeNoNaNs=*/!noFastMath);
 
     if (failed(applyPartialConversion(func, target, std::move(patterns))))
       signalPassFailure();

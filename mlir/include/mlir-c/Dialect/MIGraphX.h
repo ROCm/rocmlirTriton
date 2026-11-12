@@ -33,7 +33,13 @@ extern "C" {
 // Version 6: Adds mlirMIGraphXLDSUsageFitsArch() to check whether the
 // estimated LDS usage of a GEMM+GEMM/attention problem fits within the target
 // arch's shared-memory capacity.
-#define MLIR_MIGRAPHX_DIALECT_API_VERSION 6
+// Version 7: mlirMIGraphXAddHighLevelPipeline() and
+// mlirMIGraphXAddBackendPipeline() take the MlirModule being compiled. A null
+// module keeps the previous defaults. A non-null module is read for:
+//   - rock.disable-fast-math: same lowering as -disable-fast-math
+//   - rock.disable-nnan: omit only the nnan fast-math flag
+//   - rock.debug: run the MLIR pass verifier even in release builds
+#define MLIR_MIGRAPHX_DIALECT_API_VERSION 7
 
 typedef struct MlirMIGraphXBackendOptions {
   const char *arch;
@@ -93,13 +99,23 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
 /// Add the high-level pipeline that creates something that can be tuned.
 /// Architecture, num_cu and num_chiplets information should be set on the
 /// kernel function being compiled.
-MLIR_CAPI_EXPORTED void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm);
+///
+/// `module` is the module the pipeline will run on. It may be null. When it
+/// is not, `rock.disable-fast-math` on a kernel function selects
+/// `-disable-fast-math`, and `rock.debug` turns the pass-manager verifier on.
+/// `rock.disable-nnan` is read later, by `rock-allow-fast-math-flags`.
+MLIR_CAPI_EXPORTED void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm,
+                                                         MlirModule module);
 
 /// Adds a full compile pipeline to the pass manager. This pipeline may either
 /// receive the results of the high-level pipeline.
+///
+/// `module` is the module the pipeline will run on and is interpreted the
+/// same way as in mlirMIGraphXAddHighLevelPipeline(). It may be null.
 MLIR_CAPI_EXPORTED bool
 mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
-                               const MlirMIGraphXBackendOptions *opts);
+                               const MlirMIGraphXBackendOptions *opts,
+                               MlirModule module);
 #ifdef __cplusplus
 }
 #endif

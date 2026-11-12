@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmGemmParams.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
 #include "mlir/Dialect/Rock/utility/RocmDeviceName.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Rock/utility/compileUtils.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
 #include "mlir/IR/Diagnostics.h"
@@ -42,12 +43,28 @@
 
 // Re-verifying the module after every pass is a measurable share of every
 // MIGraphX compile, and rocmlir-driver's lit tests already verify these
-// pipelines. Keep the check only in assert-enabled builds.
+// pipelines. Keep the check only in assert-enabled builds, unless the kernel
+// carries `rock.debug`.
 #ifndef NDEBUG
 static constexpr bool kVerifyPasses = true;
 #else
 static constexpr bool kVerifyPasses = false;
 #endif
+
+static mlir::ModuleOp moduleFromC(MlirModule module) {
+  if (mlirModuleIsNull(module))
+    return {};
+  return unwrap(module);
+}
+
+static bool verifyPassesFor(MlirModule module) {
+  return kVerifyPasses ||
+         mlir::rock::moduleRequestsDebug(moduleFromC(module));
+}
+
+static bool disableFastMathFor(MlirModule module) {
+  return mlir::rock::kernelDisablesFastMath(moduleFromC(module));
+}
 
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(MIGraphX, migraphx,
                                       mlir::migraphx::MIGraphXDialect)
@@ -233,13 +250,11 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
-    pm.enableVerifier(kVerifyPasses);
-    // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI so
-    // MIGraphX can request IEEE NaN semantics; until then every entry point
-    // assumes no NaN operands.
-    mlir::migraphx::addMIGraphXPipeline(pm, /*disableFastMath=*/false);
+    pm.enableVerifier(kVerifyPasses || mlir::rock::moduleRequestsDebug(clonedMod));
+    bool disableFastMath = mlir::rock::kernelDisablesFastMath(clonedMod);
+    mlir::migraphx::addMIGraphXPipeline(pm, disableFastMath);
     mlir::rock::HighlevelOptions hlOpts;
-    hlOpts.disableFastMath = false;
+    hlOpts.disableFastMath = disableFastMath;
     mlir::rock::buildHighlevelPipeline(pm, hlOpts);
     if (mlir::failed(pm.run(clonedMod))) {
       llvm::errs()
@@ -290,11 +305,9 @@ static bool ldsUsageFitsForModule(MlirModule module) {
   {
     mlir::PassManager pm(clonedMod->getName(),
                          mlir::PassManager::Nesting::Implicit);
-    pm.enableVerifier(kVerifyPasses);
+    pm.enableVerifier(kVerifyPasses || mlir::rock::moduleRequestsDebug(clonedMod));
     mlir::rock::KernelOptions kOpts;
-    // TODO(AIROCMLIR-1226): expose fast-math control through the CAPI (see
-    // above).
-    kOpts.disableFastMath = false;
+    kOpts.disableFastMath = mlir::rock::kernelDisablesFastMath(clonedMod);
     mlir::rock::buildKernelPipeline(pm, kOpts);
     mlir::rock::buildTritonPipeline(pm, tritonOpts);
     mlir::rock::buildBackendPipeline(pm, backendOpts);
@@ -358,17 +371,16 @@ MLIR_CAPI_EXPORTED bool mlirMIGraphXLDSUsageFitsArch(int64_t gemmO,
 // pipelines
 
 MLIR_CAPI_EXPORTED
-void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm) {
+void mlirMIGraphXAddHighLevelPipeline(MlirPassManager pm, MlirModule module) {
   auto passMan = unwrap(pm);
   if (failed(applyPassManagerCLOptions(*passMan)))
     llvm::errs() << "Failed to apply command-line options.\n";
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  passMan->enableVerifier(kVerifyPasses);
-  // TODO: expose fast-math control through this entry point so MIGraphX can
-  // request IEEE NaN semantics; for now the lowering assumes no NaN operands.
-  mlir::migraphx::addMIGraphXPipeline(*passMan, /*disableFastMath=*/false);
+  passMan->enableVerifier(verifyPassesFor(module));
+  bool disableFastMath = disableFastMathFor(module);
+  mlir::migraphx::addMIGraphXPipeline(*passMan, disableFastMath);
   mlir::rock::HighlevelOptions hlOpts;
-  hlOpts.disableFastMath = false;
+  hlOpts.disableFastMath = disableFastMath;
   mlir::rock::buildHighlevelPipeline(*passMan, hlOpts);
 }
 
@@ -409,7 +421,8 @@ static bool parseBackendOptions(MlirPassManager pm,
 
 MLIR_CAPI_EXPORTED bool
 mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
-                               const MlirMIGraphXBackendOptions *opts) {
+                               const MlirMIGraphXBackendOptions *opts,
+                               MlirModule module) {
   if (!opts) {
     llvm::errs() << "opts is null\n";
     return false;
@@ -418,11 +431,9 @@ mlirMIGraphXAddBackendPipeline(MlirPassManager pm,
   if (failed(applyPassManagerCLOptions(*passMan)))
     return false;
   passMan->setNesting(mlir::PassManager::Nesting::Implicit);
-  passMan->enableVerifier(kVerifyPasses);
+  passMan->enableVerifier(verifyPassesFor(module));
   mlir::rock::KernelOptions kOpts;
-  // TODO: add a fast-math field to MlirMIGraphXBackendOptions and plumb it
-  // here; for now the kernel and backend pipelines assume no NaN operands.
-  kOpts.disableFastMath = false;
+  kOpts.disableFastMath = disableFastMathFor(module);
   mlir::rock::buildKernelPipeline(*passMan, kOpts);
 
   mlir::rock::TritonOptions tritonOpts;
