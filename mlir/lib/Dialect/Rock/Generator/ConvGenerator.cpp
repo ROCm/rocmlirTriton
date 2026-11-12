@@ -745,7 +745,7 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
   case ConvOpType::Fwd: {
     SmallVector<Value, 2> convArgs = {args[0], args[1]};
     auto convOp = ConvOp::create(builder, builder.getUnknownLoc(), resultType,
-                                 convArgs, attributes);
+                                 convArgs, ConvOp::Properties{}, attributes);
     convResult = convOp.getResult();
   } break;
   case ConvOpType::BwdData: {
@@ -756,8 +756,9 @@ LogicalResult ConvGenerator::genConvModule(ModuleOp &module, bool isVerifier,
       zeroInitArg(builder, func, storeDestIdx);
     }
     SmallVector<Value, 2> convArgs = {args[0], args[1]};
-    auto convOp = ConvBwdDataOp::create(builder, builder.getUnknownLoc(),
-                                        resultType, convArgs, attributes);
+    auto convOp = ConvBwdDataOp::create(
+        builder, builder.getUnknownLoc(), resultType, convArgs,
+        ConvBwdDataOp::Properties{}, attributes);
     convResult = convOp.getResult();
   } break;
   }
