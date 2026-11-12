@@ -236,6 +236,27 @@ func.func @rock_gemmelementwisegemm_simple(%arg0: tensor<1x64x1024xf32>, %arg1: 
   return %out : tensor<1x1024x64xf32>
 }
 
+// Causal gemm-gemm must forward causal onto the gridwise op even though
+// softmax is disabled (the gridwise verifier accepts this combination).
+// CHECK-LABEL: func.func @rock_gemmelementwisegemm_causal
+// CHECK-SAME: (%[[a:.*]]: tensor<1x64x1024xf32>, %[[b:.*]]: tensor<1x64x1024xf32>, %[[c:.*]]: tensor<1x1024x64xf32>, %[[o:.*]]: tensor<1x1024x64xf32>)
+func.func @rock_gemmelementwisegemm_causal(%arg0: tensor<1x64x1024xf32>, %arg1: tensor<1x64x1024xf32>, %arg2: tensor<1x1024x64xf32>, %arg3: tensor<1x1024x64xf32>) -> tensor<1x1024x64xf32> attributes {rock.kernel, rock.block_size = 64 : i32, rock.arch = "amdgcn-amd-amdhsa:gfx908"} {
+  // CHECK: %[[trA:.*]] = rock.transform %[[a]] by {{.*}} : tensor<1x64x1024xf32> to tensor<1x1024x64xf32>
+  // CHECK: rock.gridwise_attention(%[[trA]], %[[b]], %[[c]])
+  // CHECK: causal
+  // CHECK-SAME: enableSoftmax = false
+  %result = rock.gemm_elementwise_gemm{
+    ab = tr %arg0 * %arg1 : tensor<1x64x1024xf32>, tensor<1x64x1024xf32>
+    causal
+    out = ab * %arg2 : tensor<1x1024x64xf32>
+  } {
+    params0 = #xldops_attn_params_g0,
+    params1 = #xldops_attn_params_g1
+  } -> tensor<1x1024x64xf32>
+  %out = rock.store %result to %arg3 by set : tensor<1x1024x64xf32> -> tensor<1x1024x64xf32> to tensor<1x1024x64xf32>
+  return %out : tensor<1x1024x64xf32>
+}
+
 // CHECK-LABEL: func.func @rock_gemmelementwisegemm_tr_padded
 // CHECK-SAME: (%[[a:.*]]: tensor<1x7x49xf32>, %[[b:.*]]: tensor<1x7x49xf32>, %[[c:.*]]: tensor<1x49x7xf32>, %[[o:.*]]: tensor<1x49x7xf32>)
 // CHECK-SAME: rock.block_size = 64 : i32, rock.grid_size = 2 : i32

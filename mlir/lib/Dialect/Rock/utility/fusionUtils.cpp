@@ -132,6 +132,15 @@ LogicalResult mlir::rock::testFusionLegalitySplitK(func::FuncOp func) {
         if (isa<AttentionOp>(gemmGemmOp))
           return WalkResult::interrupt();
 
+        // A causal gemm+gemm cannot use split-k: the split folds each key
+        // partition into the group dimension, so the causal mask and the
+        // N-loop bounds would compare partition-local key indices against
+        // global query positions.
+        if (auto gemmGemm =
+                dyn_cast<GemmElementwiseGemmOp>(gemmGemmOp.getOperation());
+            gemmGemm && gemmGemm.getCausal())
+          return WalkResult::interrupt();
+
         // Only gemm+gemm reaches here, so there is a single result.
         auto gemmGemmResult = gemmGemmOp->getResult(0);
 
