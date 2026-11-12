@@ -313,3 +313,17 @@ func.func @caller(%arg0: tensor<8x16xf32>, %arg1: tensor<16x32xf32>) -> tensor<8
   return %0 : tensor<8x32xf32>
 }
 
+
+// -----
+
+// A standalone reduce kernel has no FusionRoot — `rock.reduce` does not carry
+// the trait — so its marker is what says the returned value needs a store.
+// CHECK-LABEL: func.func @standalone_reduce
+// CHECK-SAME: (%arg0: tensor<8x1024xf32>, %arg1: tensor<8x1xf32>) -> tensor<8x1xf32>
+// CHECK: %[[RED:.*]] = rock.reduce sum %arg0
+// CHECK: %[[OUT:.*]] = rock.store %[[RED]] to %arg1 by set
+// CHECK: return %[[OUT]]
+func.func @standalone_reduce(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> attributes {rock.kernel, rock.reduce} {
+  %0 = rock.reduce sum %arg0 {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  return %0 : tensor<8x1xf32>
+}

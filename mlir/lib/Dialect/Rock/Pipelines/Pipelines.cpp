@@ -466,13 +466,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createCSEPass());
   };
-  // Cannot be merged with addWithDCE: that helper runs the pass in a new
-  // func nest and the DCE at module level, whereas here both the pass and the
-  // DCE runs on the caller existing func nest.
-  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
-    funcPm.addPass(std::move(pass));
-    funcPm.addPass(createRemoveDeadValuesPass());
-  };
   addWithDCE(rock::createRockAffixTuningParametersPass());
   addWithDCE(rock::createRockLowerReducePass());
   addWithDCE(rock::createRockRegularizeOutputPass());
@@ -503,6 +496,68 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // Must run after lower-stores (needs the rock.blockwise_store) and before
   // lower-blockwise-to-ptr (which lowers it away).
   addWithDCE(rock::createRockAddTritonMetadataPass());
+
+  buildKernelPipelineTail(pm, options);
+}
+
+void rock::buildElementwisePipeline(OpPassManager &pm,
+                                    const rock::KernelOptions &options) {
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
+
+  addWithDCE(rock::createRockRegularizeElementwisePass());
+  addWithDCE(rock::createRockElementwiseToGridwisePass());
+  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
+  addWithDCE(rock::createRockRegularizeInputPass());
+  addWithDCE(rock::createRockLowerLoadsPass());
+  addWithDCE(rock::createRockLowerStoresPass());
+
+  buildKernelPipelineTail(pm, options);
+}
+
+void rock::buildReducePipeline(OpPassManager &pm,
+                               const rock::KernelOptions &options) {
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
+
+  pm.addPass(rock::createRockRegularizeReducePass());
+  pm.addPass(createCSEPass());
+
+  // The tile this pass picks is the whole schedule: `tritongpu-coalesce`
+  // derives the blocked layout of the load from it, and that layout decides
+  // whether the resulting `tt.reduce` combines in registers, across the lanes
+  // of a wave, or through LDS. The tile is chosen against a workgroup of
+  // `kReduceNumWaves` waves, which has to be the `numWarps` the Triton
+  // pipeline is later run with; see that constant for why nothing enforces it.
+  rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
+  lowerReduceOpts.arch = options.arch;
+  addWithDCE(rock::createRockLowerReduceToBlockwisePass(lowerReduceOpts));
+
+  addWithDCE(rock::createRockRegularizeInputPass());
+  addWithDCE(rock::createRockLowerLoadsPass());
+  addWithDCE(rock::createRockLowerStoresPass());
+
+  buildKernelPipelineTail(pm, options);
+}
+
+void rock::buildKernelPipelineTail(OpPassManager &pm,
+                                   const rock::KernelOptions &options) {
+  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
+    pm.nest<func::FuncOp>().addPass(std::move(pass));
+    pm.addPass(createRemoveDeadValuesPass());
+  };
+
+  // Cannot be merged with addWithDCE: that helper runs the pass in a new
+  // func nest and the DCE at module level, whereas here both the pass and the
+  // DCE runs on the caller existing func nest.
+  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
+    funcPm.addPass(std::move(pass));
+    funcPm.addPass(createRemoveDeadValuesPass());
+  };
 
   // Rewrite the math ops Triton has no conversion pattern for. This has to come
   // before math-extend-to-supported-types, which would otherwise promote a bf16
@@ -604,83 +659,6 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   // tt.func)
   pm.addPass(rock::createRockTensorToTritonPtrPass());
   // After this point, function is triton::FuncOp
-  auto &ttFuncPm = pm.nest<triton::FuncOp>();
-  ttFuncPm.addPass(createCanonicalizerPass());
-  ttFuncPm.addPass(createCSEPass());
-}
-
-void rock::buildElementwisePipeline(OpPassManager &pm,
-                                    const rock::KernelOptions &options) {
-  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
-    pm.nest<func::FuncOp>().addPass(std::move(pass));
-    pm.addPass(createRemoveDeadValuesPass());
-  };
-  auto addWithFuncDCE = [](OpPassManager &funcPm, std::unique_ptr<Pass> pass) {
-    funcPm.addPass(std::move(pass));
-    funcPm.addPass(createRemoveDeadValuesPass());
-  };
-
-  addWithDCE(rock::createRockRegularizeElementwisePass());
-  addWithDCE(rock::createRockElementwiseToGridwisePass());
-  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
-  addWithDCE(rock::createRockRegularizeInputPass());
-  addWithDCE(rock::createRockLowerLoadsPass());
-  addWithDCE(rock::createRockLowerStoresPass());
-
-  {
-    rock::RockLegalizeMathForTritonPassOptions legalizeMathOpts;
-    legalizeMathOpts.disableFastMath = options.disableFastMath;
-    addWithDCE(rock::createRockLegalizeMathForTritonPass(legalizeMathOpts));
-  }
-
-  {
-    math::MathExtendToSupportedTypesOptions mathExtendOptions;
-    mathExtendOptions.extraTypeStrs = {"f16"};
-    mathExtendOptions.targetTypeStr = "f32";
-    addWithDCE(math::createMathExtendToSupportedTypes(mathExtendOptions));
-  }
-
-  if (!options.disableFastMath)
-    addWithDCE(rock::createRockAllowFastMathFlagsPass());
-
-  addWithDCE(rock::createRockLegalizeFloatTypesPass());
-
-  pm.addPass(rock::createRockSerializeHostFuncsPass());
-
-  {
-    arith::ArithEmulateUnsupportedFloatsOptions emulateOpts;
-    emulateOpts.sourceTypeStrs = {"f4E2M1FN",   "f8E4M3FN", "f8E4M3FNUZ",
-                                  "f8E5M2FNUZ", "f8E5M2",   "f8E8M0FNU"};
-    emulateOpts.targetTypeStr = "f32";
-    pm.addPass(arith::createArithEmulateUnsupportedFloats(emulateOpts));
-  }
-
-  {
-    arith::ArithExpandOpsPassOptions expandOpts;
-    expandOpts.includeF8E8M0 = true;
-    expandOpts.includeF4E2M1 = true;
-    expandOpts.includeMinMaxF = false;
-    expandOpts.includeMinMaxI = false;
-    pm.addPass(arith::createArithExpandOpsPass(expandOpts));
-  }
-
-  auto &funcPm2 = pm.nest<func::FuncOp>();
-  funcPm2.addPass(rock::createRockAnalyzeMemoryUsePass());
-  funcPm2.addPass(rock::createRockLowerBlockwiseToPtrPass());
-  funcPm2.addPass(rock::createRockPreserveMaskedLoadSemanticsPass());
-  addWithFuncDCE(funcPm2, rock::createRockCollapseContiguousMergesPass());
-  addWithFuncDCE(funcPm2, rock::createRockIncrementalPointerArithPass());
-  funcPm2.addPass(rock::createRockTransformsToPointerArithPass());
-  funcPm2.addPass(createCanonicalizerPass());
-
-  rock::RockToTTIRPassOptions rockToTTIROpts;
-  rockToTTIROpts.disableFastMath = options.disableFastMath;
-  funcPm2.addPass(rock::createRockToTTIRPass(rockToTTIROpts));
-
-  if (!options.disableFastMath)
-    addWithFuncDCE(funcPm2, rock::createRockAllowFastMathFlagsPass());
-
-  pm.addPass(rock::createRockTensorToTritonPtrPass());
   auto &ttFuncPm = pm.nest<triton::FuncOp>();
   ttFuncPm.addPass(createCanonicalizerPass());
   ttFuncPm.addPass(createCSEPass());
@@ -899,6 +877,9 @@ void rock::registerPipelines() {
       "rock-elementwise-pipeline",
       "Lower standalone elementwise Rock kernels to TTIR-ready form.",
       buildElementwisePipeline);
+  PassPipelineRegistration<rock::KernelOptions>(
+      "rock-reduce-pipeline", "Lower reduce rock kernels to Triton kernels",
+      buildReducePipeline);
   PassPipelineRegistration<rock::TritonOptions>(
       "rock-triton-pipeline", "Convert Triton IR to TritonGPU IR.",
       buildTritonPipeline);
