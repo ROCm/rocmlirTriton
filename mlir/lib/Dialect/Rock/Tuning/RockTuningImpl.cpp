@@ -787,7 +787,8 @@ static void createGemmGemmTuningRangeBF(TuningParamSet *newSpace,
                               /*useBufferAtomics=*/kKnobDefault,
                               /*useReductionLayout=*/kKnobDefault,
                               /*useOptimizeEpilogue=*/kKnobDefault,
-                              /*useBf16x3ForF32=*/kKnobDefault);
+                              /*useBf16x3ForF32=*/kKnobDefault,
+                              /*useKTailPeeling=*/kKnobDefault);
                           newSpace->tuningRange.insert(
                               cast<RockTuningParamAttrInterface>(
                                   gemmGemmParams));
@@ -908,6 +909,11 @@ computeOptimalSplitKFactors(RockGemmWrapperInterface gemmOp,
 // - `useReductionLayout`               (set to kKnobDefault)
 // - `useOptimizeEpilogue`              (set to kKnobDefault)
 // - `useBf16x3ForF32`                        (set to kKnobDefault)
+// - `useKTailPeeling`                  (set to kKnobDefault)
+//
+// `useKTailPeeling` is tuned, but the peeled variants are paired with the
+// quick-tuning candidates rather than swept across this brute-force space;
+// see createGemmTuningRangeQuick for why.
 static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                                     RockGemmWrapperInterface gemmOp,
                                     TuningParamSetKind kind) {
@@ -977,7 +983,8 @@ static void createGemmTuningRangeBF(TuningParamSet *newSpace,
                             /*useBufferAtomics=*/kKnobDefault,
                             /*useReductionLayout=*/kKnobDefault,
                             /*useOptimizeEpilogue=*/kKnobDefault,
-                            /*useBf16x3ForF32=*/kKnobDefault);
+                            /*useBf16x3ForF32=*/kKnobDefault,
+                            /*useKTailPeeling=*/kKnobDefault);
                         if (kind == TuningParamSetKind::Full &&
                             failed(tuningInfo->couldBePerformant(info,
                                                                  gemmParams)))
@@ -1015,6 +1022,34 @@ static void createGemmTuningRangeQuick(TuningParamSet *newSpace,
     if (!supportsSplitK && param.getSplitKFactor() > 1)
       continue;
     newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(param));
+
+    // The quick lists are baked with `useKTailPeeling` at its default, which
+    // pads. Offer the peeling variant alongside for the problems it can change
+    // (see kTailPeelingMightPay), so a quick-tuned odd-K GEMM still gets the
+    // choice; this is the only field quick tuning varies.
+    //
+    // Pairing the knob with these curated tiles, rather than sweeping it
+    // across the brute-force space in createGemmTuningRangeBF, is what keeps
+    // it affordable: on gfx1151 at f16 k=2815 the full space with the knob on
+    // every tile came to 598 configs and picked 128x256x64/8 waves peeled,
+    // which is the same winner the 56-config quick space picks. Doubling 307
+    // brute-force configs bought nothing, so the knob rides along with the
+    // tiles quick tuning already believes in.
+    if (param.getSplitKFactor() == 1 &&
+        kTailPeelingMightPay(info.gemmSize.k, param.getKPerBlock(),
+                             info.gemmAType, info.gemmBType)) {
+      auto peeled = GemmParamsAttr::get(
+          b.getContext(), param.getMPerBlock(), param.getNPerBlock(),
+          param.getKPerBlock(), param.getKpack(), param.getNumCTAs(),
+          param.getNumWaves(), param.getMatrixInstrNonkdim(),
+          param.getSplitKFactor(), param.getNumStages(), param.getWavesPerEU(),
+          param.getGridGroupSize(), param.getUseAsyncCopy(),
+          param.getUseBlockPingpong(), param.getUseInThreadTranspose(),
+          param.getUseBufferOps(), param.getUseBufferAtomics(),
+          param.getUseReductionLayout(), param.getUseOptimizeEpilogue(),
+          param.getUseBf16x3ForF32(), /*useKTailPeeling=*/1);
+      newSpace->tuningRange.insert(cast<RockTuningParamAttrInterface>(peeled));
+    }
   }
 }
 

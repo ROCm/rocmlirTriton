@@ -100,7 +100,8 @@ PopulateParamsGemmGemm::getGemm0Params(OpBuilder &b,
       params.getUseAsyncCopy(), params.getUseBlockPingpong(),
       params.getUseInThreadTranspose(), params.getUseBufferOps(),
       params.getUseBufferAtomics(), params.getUseReductionLayout(),
-      params.getUseOptimizeEpilogue(), params.getUseBf16x3ForF32());
+      params.getUseOptimizeEpilogue(), params.getUseBf16x3ForF32(),
+      params.getUseKTailPeeling());
 }
 
 GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
@@ -119,5 +120,5 @@ GemmParamsAttr PopulateParamsGemmGemm::getGemm1Params(
       params.getUseBlockPingpong(), params.getUseInThreadTranspose(),
       params.getUseBufferOps(), params.getUseBufferAtomics(),
       params.getUseReductionLayout(), params.getUseOptimizeEpilogue(),
-      params.getUseBf16x3ForF32());
+      params.getUseBf16x3ForF32(), params.getUseKTailPeeling());
 }

@@ -203,6 +203,25 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
   GemmSize extraPad =
       requiredPadding(params, size).value_or(GemmSize{0, 0, 0, 0});
 
+  // Padding K up to a full kPerBlock makes the last reduction tile read past
+  // the data, which forces a mask onto the loads in the K loop -- on every
+  // iteration, since the loop has a single body. `useKTailPeeling` asks for
+  // the alternative: leave K short and let rock-gridwise-gemm-to-blockwise
+  // peel the leftover tail, trading that mask for a tail paid once. Which is
+  // faster is config-dependent enough that only the tuner decides, so the
+  // default (-1) pads, same as before the knob existed.
+  //
+  // Scaled GEMMs and split-K both rely on operands whose K divides exactly
+  // (quantBlockSize slicing and the split reshape respectively), so they keep
+  // the padding regardless of the knob.
+  auto gemmParams = cast<GemmParamsAttr>(params);
+  bool peelKTail =
+      gemmParams.getUseKTailPeeling() == 1 && !(scaleA && scaleB) &&
+      splitKFactor == 1 &&
+      canPeelKTail(size.k, gemmParams.getKPerBlock(), elemTypeA, elemTypeB);
+  if (peelKTail)
+    extraPad.k = 0;
+
   a = padMatrix(a, rw, loc, "gemmM", extraPad.m, "gemmK", extraPad.k);
   b = padMatrix(b, rw, loc, "gemmK", extraPad.k, "gemmN", extraPad.n);
   transformViews([&](Value v) {
