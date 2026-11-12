@@ -150,10 +150,11 @@ static LogicalResult rewriteViaOcml(OpTy op, PatternRewriter &rewriter,
 
   SmallVector<Value> args;
   for (Value operand : op->getOperands())
-    args.push_back(
-        widen ? arith::ExtFOp::create(rewriter, loc, computeTy, operand)
-                    .getResult()
-              : operand);
+    args.push_back(widen ? arith::ExtFOp::create(rewriter, loc, computeTy,
+                                                 operand,
+                                                 arith::ExtFOp::Properties{})
+                               .getResult()
+                         : operand);
 
   // Empty libname and libpath match what `core.extern_elementwise("", "", ...)`
   // emits in the Triton frontend: the symbol is resolved either by an AMD
@@ -189,7 +190,8 @@ struct TanhLowering : public OpRewritePattern<math::TanhOp> {
       rewriter.replaceOp(op, emitApproxTanh(rewriter, loc, op.getOperand()));
       return success();
     }
-    Value in = arith::ExtFOp::create(rewriter, loc, computeTy, op.getOperand())
+    Value in = arith::ExtFOp::create(rewriter, loc, computeTy, op.getOperand(),
+                                     arith::ExtFOp::Properties{})
                    .getResult();
     rewriter.replaceOpWithNewOp<arith::TruncFOp>(
         op, origTy, emitApproxTanh(rewriter, loc, in));

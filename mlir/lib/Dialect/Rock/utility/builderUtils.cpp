@@ -110,7 +110,7 @@ Value createTypeConversionOp(OpBuilder &b, Location loc, Value source,
       }
     } else if (isa<FloatType>(sourceElemType) && isa<FloatType>(destElemType)) {
       if (sourceWidth < destWidth) {
-        result = arith::ExtFOp::create(b, loc, destType, source);
+        result = arith::ExtFOp::create(b, loc, destType, source, arith::ExtFOp::Properties{});
       } else {
         result = arith::TruncFOp::create(b, loc, destType, source);
       }

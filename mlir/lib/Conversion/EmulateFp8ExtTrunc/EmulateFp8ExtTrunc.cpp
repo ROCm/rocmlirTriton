@@ -222,7 +222,8 @@ void Fp8ExtToTableLookupPattern::rewrite(
     if (outElemType.getIntOrFloatBitWidth() < 32)
       return TruncFOp::create(rewriter, loc, outType, floats);
     if (outElemType.getIntOrFloatBitWidth() > 32)
-      return ExtFOp::create(rewriter, loc, outType, floats);
+      return ExtFOp::create(rewriter, loc, outType, floats,
+                            ExtFOp::Properties{});
     llvm_unreachable("f32 is the only 32-bit float type");
   };
   auto inVecType = dyn_cast<VectorType>(inType);
@@ -720,7 +721,8 @@ void Fp8TruncToCallPattern::rewrite(TruncFOp op, OpAdaptor adaptor,
   Type inType = cloneOrReplace(rawInType, rewriter.getF32Type());
   Value in = rawIn;
   if (rawInElemType.getIntOrFloatBitWidth() < 32)
-    in = arith::ExtFOp::create(rewriter, loc, inType, rawIn);
+    in = arith::ExtFOp::create(rewriter, loc, inType, rawIn,
+                               ExtFOp::Properties{});
   else if (rawInElemType.getIntOrFloatBitWidth() > 32)
     in = arith::TruncFOp::create(rewriter, loc, inType, rawIn);
 

@@ -2120,7 +2120,8 @@ static func::FuncOp getMemcpyFuncDecl(ModuleOp module, const MemRefType srcType,
         } else {
           if (srcBitWidth < dstBitWidth)
             newLoadOp =
-                arith::ExtFOp::create(opBuilder, loc, dstElemType, loadOp);
+                arith::ExtFOp::create(opBuilder, loc, dstElemType, loadOp,
+                                      arith::ExtFOp::Properties{});
           else
             newLoadOp =
                 arith::TruncFOp::create(opBuilder, loc, dstElemType, loadOp);
@@ -2209,8 +2210,9 @@ static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value tensor,
           result = arith::SIToFPOp::create(nestedB, nestedLoc,
                                            nestedB.getF32Type(), args[0]);
         } else {
-          result = arith::ExtFOp::create(nestedB, nestedLoc,
-                                         nestedB.getF32Type(), args[0]);
+          result =
+              arith::ExtFOp::create(nestedB, nestedLoc, nestedB.getF32Type(),
+                                    args[0], arith::ExtFOp::Properties{});
         }
         linalg::YieldOp::create(nestedB, nestedLoc, result);
       });
@@ -5703,8 +5705,8 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
             Value valOrig = affine::AffineLoadOp::create(b, loc, valFlat, ivs);
             Value valTruncated =
                 arith::TruncFOp::create(b, loc, testElemType, valOrig);
-            Value valExt =
-                arith::ExtFOp::create(b, loc, valElemType, valTruncated);
+            Value valExt = arith::ExtFOp::create(
+                b, loc, valElemType, valTruncated, arith::ExtFOp::Properties{});
             affine::AffineStoreOp::create(b, loc, valExt, valFlat, ivs);
           });
     }
