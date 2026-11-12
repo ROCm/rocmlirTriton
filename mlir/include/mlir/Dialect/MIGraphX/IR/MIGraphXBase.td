@@ -23,6 +23,12 @@ def MIGraphX_Dialect : Dialect {
 
   let hasConstantMaterializer = 1;
   let useDefaultTypePrinterParser = 1;
+
+  // TODO(bump): the ops in this dialect print their inherent attributes (which
+  // are property-backed) through `attr-dict`, mixed with the discardable ones.
+  // Opting out of strict properties keeps that legacy spelling; migrating the
+  // assembly formats (and every test) to `prop-dict` is a separate task.
+  let useStrictPropertiesInAssemblyFormat = 0;
 }
 
 #endif // MIGRAPHX_BASE
