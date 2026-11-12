@@ -95,6 +95,7 @@
 
 #include <array>
 #include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/IR/InstIterator.h>
 #include <mutex>
 
 // LLD for linking
@@ -106,16 +107,12 @@ LLD_HAS_DRIVER(elf)
 // Forward declaration for Triton's BreakStructPhiNodesPass (same as llvm.cc)
 // Implementation is in lib/Target/LLVMIR/LLVMIRBreakPhiStruct.cpp
 namespace llvm {
-struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
+struct BreakStructPhiNodesPass
+    : OptionalPassInfoMixin<BreakStructPhiNodesPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
   static StringRef name() { return "BreakStructPhiNodesPass"; }
 };
 } // namespace llvm
-
-// Forward declaration for Triton's scalarize pass
-namespace mlir::triton::AMD {
-void runScalarizePackedFOpsPass(llvm::Function &F);
-}
 
 using namespace mlir;
 
@@ -196,13 +193,23 @@ void initializeLLVMTargets() {
   llvm::parallel::strategy = llvm::hardware_concurrency(1);
 }
 
+void enableFPContraction(llvm::Module &module) {
+  for (llvm::Function &function : module)
+    for (llvm::Instruction &instruction : llvm::instructions(function))
+      if (instruction.getOpcode() == llvm::Instruction::FAdd ||
+          instruction.getOpcode() == llvm::Instruction::FSub ||
+          instruction.getOpcode() == llvm::Instruction::FMul)
+        instruction.setHasAllowContract(true);
+}
+
 /// Create LLVM target machine - from createTargetMachine in llvm.cc
 std::unique_ptr<llvm::TargetMachine>
-createTargetMachine(llvm::Module &module, llvm::Triple &triple,
-                    StringRef archStr, StringRef features, bool enableFpFusion,
-                    bool asmComments) {
+createTargetMachine(llvm::Module &module, StringRef proc, bool enableFpFusion,
+                    const std::string &features, bool asmComments,
+                    const std::string &abi = "") {
   std::string error;
-  auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
+  auto *target =
+      llvm::TargetRegistry::lookupTarget(module.getTargetTriple(), error);
   if (!target) {
     llvm::errs() << "Target lookup failed: " << error << "\n";
     return nullptr;
@@ -210,34 +217,39 @@ createTargetMachine(llvm::Module &module, llvm::Triple &triple,
 
   llvm::TargetOptions opt;
   if (enableFpFusion)
-    opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
+    enableFPContraction(module);
   opt.TrapUnreachable = true;
   opt.MCOptions.AsmVerbose = asmComments;
   opt.MCOptions.PreserveAsmComments = asmComments;
-
-  return std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
-      triple, archStr, features, opt, llvm::Reloc::PIC_, std::nullopt,
-      llvm::CodeGenOptLevel::Aggressive));
+  opt.MCOptions.ABIName = abi;
+  std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
+      module.getTargetTriple(), proc, features, opt, llvm::Reloc::PIC_,
+      std::nullopt, llvm::CodeGenOptLevel::Aggressive));
+  return machine;
 }
 
 /// Add control constant to module (for device library compatibility)
 void addControlConstant(llvm::Module &module, const char *name, int bitwidth,
                         int value) {
+  using llvm::GlobalVariable;
+
   llvm::Type *type =
       llvm::IntegerType::getIntNTy(module.getContext(), bitwidth);
-  auto *gv = new llvm::GlobalVariable(
+  auto *initializer = llvm::ConstantInt::get(type, value, /*isSigned=*/false);
+  auto *constant = new llvm::GlobalVariable(
       module, type, /*isConstant=*/true,
-      llvm::GlobalValue::LinkageTypes::LinkOnceODRLinkage,
-      llvm::ConstantInt::get(type, value), name, nullptr,
-      llvm::GlobalValue::ThreadLocalMode::NotThreadLocal, /*AddressSpace=*/4);
-  gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
-  gv->setVisibility(llvm::GlobalValue::VisibilityTypes::ProtectedVisibility);
-  gv->setAlignment(llvm::MaybeAlign(bitwidth / 8));
+      llvm::GlobalValue::LinkageTypes::LinkOnceODRLinkage, initializer, name,
+      /*before=*/nullptr, llvm::GlobalValue::ThreadLocalMode::NotThreadLocal,
+      /*AddressSpace=*/4);
+  constant->setAlignment(llvm::MaybeAlign(bitwidth / 8));
+  constant->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+  constant->setVisibility(
+      llvm::GlobalValue::VisibilityTypes::ProtectedVisibility);
 }
 
 /// Set ISA version control constant
-void setISAVersion(llvm::Module &module, StringRef archStr) {
-  llvm::AMDGPU::IsaVersion version = llvm::AMDGPU::getIsaVersion(archStr);
+void setISAVersion(llvm::Module &module, const std::string &arch) {
+  llvm::AMDGPU::IsaVersion version = llvm::AMDGPU::getIsaVersion(arch);
   int isaVersion =
       version.Major * 1000 + version.Minor * 100 + version.Stepping;
   addControlConstant(module, "__oclc_ISA_version", /*bitwidth=*/32, isaVersion);
@@ -246,14 +258,14 @@ void setISAVersion(llvm::Module &module, StringRef archStr) {
 /// Set ABI version control constant
 void setABIVersion(llvm::Module &module, int version) {
   llvm::Type *i32Ty = llvm::Type::getInt32Ty(module.getContext());
-  auto *gv = new llvm::GlobalVariable(
+  auto *abi = new llvm::GlobalVariable(
       module, i32Ty, /*isConstant=*/true,
       llvm::GlobalValue::LinkageTypes::LinkOnceODRLinkage,
       llvm::ConstantInt::get(i32Ty, version), "__oclc_ABI_version", nullptr,
       llvm::GlobalValue::ThreadLocalMode::NotThreadLocal, /*AddressSpace=*/4);
-  gv->setVisibility(llvm::GlobalValue::VisibilityTypes::ProtectedVisibility);
-  gv->setAlignment(llvm::MaybeAlign(4));
-  gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+  abi->setVisibility(llvm::GlobalValue::VisibilityTypes::ProtectedVisibility);
+  abi->setAlignment(llvm::MaybeAlign(4));
+  abi->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
 
   module.addModuleFlag(llvm::Module::Error, "amdhsa_code_object_version",
                        version);
@@ -414,7 +426,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
 }
 
 /// Check if architecture has architected SGPRs
-bool hasArchitectedSGPRs(llvm::Triple &triple, StringRef archStr) {
+bool hasArchitectedSGPRs(const llvm::Triple &triple, StringRef archStr) {
   std::string error;
   auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
   if (!target)
@@ -430,7 +442,7 @@ bool linkDeviceLibraryModule(llvm::Module &module,
                              StringRef identifier) {
   llvm::Linker linker(module);
 
-  libMod->setTargetTriple(llvm::Triple(module.getTargetTriple()));
+  libMod->setTargetTriple(module.getTargetTriple());
   libMod->setDataLayout(module.getDataLayout());
 
   llvm::StringSet<> externalFns;
@@ -626,9 +638,6 @@ void optimizeModule(llvm::Module &module, llvm::TargetMachine *tm,
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
   llvm::ModulePassManager mpm;
-
-  // Register callback to add BreakStructPhiNodesPass before vectorization
-  // This matches llvm.cc's registerVectorizerStartEPCallback
   pb.registerVectorizerStartEPCallback(
       [&](llvm::FunctionPassManager &fpm, llvm::OptimizationLevel level) {
         // Triton generates large structure of scalars which may pessimise
@@ -705,9 +714,17 @@ bool isExpertSchedulingEnabled(llvm::StringRef arch, int useExpertScheduling) {
   return useExpertScheduling != 0;
 }
 
+llvm::Triple getAMDTargetTriple(const std::string &arch) {
+  llvm::AMDGPU::GPUKind gpuKind = llvm::AMDGPU::parseArchAMDGCN(arch);
+  llvm::Triple::SubArchType subArch = llvm::AMDGPU::getSubArch(gpuKind);
+  return llvm::Triple(llvm::Triple::amdgpu, subArch, llvm::Triple::AMD,
+                      llvm::Triple::AMDHSA);
+}
+
 std::unique_ptr<llvm::Module>
 mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
-           const mlir::rock::TritonToHsacoOptions &options) {
+           const mlir::rock::TritonToHsacoOptions &options,
+           const llvm::Triple &triple) {
   // llvm.cc's to_module() calls translateModuleToLLVMIR with verification
   // always enabled, see kVerifyLLVMIR.
   std::unique_ptr<llvm::Module> llvmModule =
@@ -718,7 +735,9 @@ mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
     return nullptr;
   }
 
-  StringRef arch = options.arch;
+  const std::string &arch = options.arch;
+  llvmModule->setTargetTriple(triple);
+
   std::string features = options.features;
   // Upstream Triton has an explicit `enable_asan` knob and derives the target
   // feature from it, because asan on AMDGPU requires XNACK: instrumented
@@ -729,19 +748,11 @@ mlirToLLVM(ModuleOp module, llvm::LLVMContext &llvmContext,
   // compiler.py. We are handed only the feature string, so we read that
   // implication backwards and take `+xnack` as the request for asan.
   bool enableAsan = (StringRef(options.features).contains("+xnack"));
-
   bool enableExpertScheduling =
       isExpertSchedulingEnabled(arch, options.useExpertScheduling);
-
-  auto triple = llvm::Triple(options.triple);
-  // Set target triple and data layout (attach_target_triple in compiler.py)
-  llvmModule->setTargetTriple(triple);
-
-  // attach_datalayout in compiler.py. This target machine only drives the
-  // optimizer and the data layout, so it never prints assembly.
-  auto tm = createTargetMachine(*llvmModule, triple, arch, features,
-                                options.enableFpFusion,
-                                /*asmComments=*/false);
+  auto tm =
+      createTargetMachine(*llvmModule, arch, options.enableFpFusion, features,
+                          /*asmComments=*/false);
   if (!tm) {
     return nullptr;
   }
@@ -851,6 +862,9 @@ struct TritonAMDGPUCodegenOptions {
   uint8_t canonicalizeGEP;
   uint8_t dumpIR;
   uint8_t enableTiming;
+  // Read only by triton_amdgpu_translate_mir_to_asm.
+  uint8_t enableMISched;
+  uint8_t emitObject;
 };
 
 /// RAII container for triton_amd_codegen library
@@ -915,7 +929,7 @@ private:
   void *handle = nullptr;
 };
 
-std::string compileAMDGPU(llvm::Module &module, const std::string &triple,
+std::string compileAMDGPU(llvm::Module &module, const llvm::Triple &triple,
                           const std::string &processor,
                           const std::string &features, const std::string &flags,
                           bool enableFPFusion) {
@@ -924,8 +938,8 @@ std::string compileAMDGPU(llvm::Module &module, const std::string &triple,
   llvm::WriteBitcodeToFile(module, stream);
 
   TritonAMDGPUCodegenOptions codegenOptions{
-      .abiVersion = 1,
-      .triple = triple.c_str(),
+      .abiVersion = 2,
+      .triple = triple.str().c_str(),
       .processor = processor.c_str(),
       .features = features.c_str(),
       .abi = "",
@@ -936,6 +950,8 @@ std::string compileAMDGPU(llvm::Module &module, const std::string &triple,
       .canonicalizeGEP = 0,
       .dumpIR = 0,
       .enableTiming = 0,
+      .enableMISched = 0,
+      .emitObject = 0,
   };
   char *amdgcnAsm = nullptr;
   size_t amdgcnAsmSize = 0;
@@ -956,7 +972,8 @@ std::string compileAMDGPU(llvm::Module &module, const std::string &triple,
 
 /// Translate LLVM IR module to AMDGCN assembly string
 std::string makeAMDGCN(llvm::Module &module,
-                       const mlir::rock::TritonToHsacoOptions &options) {
+                       const mlir::rock::TritonToHsacoOptions &options,
+                       const llvm::Triple &triple) {
 
   std::string features;
   std::string flags;
@@ -965,9 +982,8 @@ std::string makeAMDGCN(llvm::Module &module,
     flags = "amdgpu-anti-hints-for-va-vdst";
   }
 
-  std::string amdgcnAsm =
-      compileAMDGPU(module, options.triple, options.arch, features, flags,
-                    options.enableFpFusion);
+  std::string amdgcnAsm = compileAMDGPU(module, triple, options.arch, features,
+                                        flags, options.enableFpFusion);
   return amdgcnAsm;
 }
 
@@ -977,14 +993,14 @@ std::string makeAMDGCN(llvm::Module &module,
 
 /// Assemble AMDGCN assembly to object code (amd.assemble_amdgcn)
 std::string assembleAMDGCN(const std::string &assembly,
-                           const std::string &triple,
+                           const llvm::Triple &triple,
                            const std::string &processor,
                            const std::string &features) {
   char *objectFile = nullptr;
   size_t objectFileSize = 0;
   char *error = nullptr;
   const auto &library = TritonAMDGPUCodegenLibrary::getLibrary();
-  if (library.assemble(assembly.c_str(), assembly.size(), triple.c_str(),
+  if (library.assemble(assembly.c_str(), assembly.size(), triple.str().c_str(),
                        processor.c_str(), features.c_str(), &objectFile,
                        &objectFileSize, &error) != 0) {
     llvm::errs() << "Failed to assemble AMDGCN: " << error << '\n';
@@ -1066,7 +1082,7 @@ std::string linkHSACO(const std::string &objectCode) {
 }
 
 /// Convert AMDGCN assembly to HSACO binary - make_hsaco in compiler.py
-std::string makeHSACO(const std::string &amdgcnAsm, const std::string &triple,
+std::string makeHSACO(const std::string &amdgcnAsm, const llvm::Triple &triple,
                       const std::string &arch, const std::string &features) {
   // Assemble to object code
   auto objectCode = assembleAMDGCN(amdgcnAsm, triple, arch, features);
@@ -1091,8 +1107,9 @@ FailureOr<std::string>
 translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   initializeLLVMTargets();
   llvm::LLVMContext llvmContext;
+  llvm::Triple triple = getAMDTargetTriple(options.arch);
 
-  auto llvmModule = mlirToLLVM(module, llvmContext, options);
+  auto llvmModule = mlirToLLVM(module, llvmContext, options, triple);
   if (!llvmModule)
     return failure();
 
@@ -1102,7 +1119,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
     llvm::errs() << "\n";
   }
 
-  auto amdgcnAsm = makeAMDGCN(*llvmModule, options);
+  auto amdgcnAsm = makeAMDGCN(*llvmModule, options, triple);
   if (amdgcnAsm.empty()) {
     llvm::errs() << "Failed to generate AMDGCN assembly\n";
     return failure();
@@ -1117,8 +1134,7 @@ translateTritonToHsaco(ModuleOp module, const TritonToHsacoOptions &options) {
   bool enableAsan = (options.features.find("+xnack") != options.features.npos);
   if (enableAsan)
     hsacoFeatures = "+xnack";
-  auto hsaco =
-      makeHSACO(amdgcnAsm, options.triple, options.arch, hsacoFeatures);
+  auto hsaco = makeHSACO(amdgcnAsm, triple, options.arch, hsacoFeatures);
   if (hsaco.empty()) {
     llvm::errs() << "Failed to make HSACO assembly\n";
     return failure();
@@ -1170,7 +1186,6 @@ public:
 
     // Build options from pass parameters
     TritonToHsacoOptions options;
-    options.triple = triple.getValue();
     options.arch = arch.getValue();
     options.features = features.getValue();
     options.optLevel = optLevel.getValue();
