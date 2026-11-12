@@ -17,11 +17,11 @@ include(FetchContent)
 
 set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-10-19"
+set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-11-12"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
 set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
-set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-10-19"
+set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-11-12"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
 
 message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}")
