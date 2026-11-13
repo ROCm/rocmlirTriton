@@ -27,16 +27,16 @@
 // CHECK: tosa.cast %{{.+}} : (tensor<4x8x1x1xf16>) -> tensor<4x8x1x1xf32>
 
 // LSE re-normalization across the splitKV axis (axis = 1), entirely in f32.
-// CHECK: %[[mx:.+]] = tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
+// CHECK: %[[mx:.+]] = tosa.reduce_max %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: %[[safeMx:.+]] = tosa.maximum %[[mx]], %{{.+}} : (tensor<4x1x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: tosa.sub %{{.+}}, %[[safeMx]] : (tensor<4x8x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x8x1x1xf32>
 // CHECK: tosa.exp %{{.+}} : (tensor<4x8x1x1xf32>) -> tensor<4x8x1x1xf32>
-// CHECK: %[[sum:.+]] = tosa.reduce_sum %{{.+}} {axis = 1 : i32} : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
+// CHECK: %[[sum:.+]] = tosa.reduce_sum %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: %[[safeSum:.+]] = tosa.maximum %[[sum]], %{{.+}} : (tensor<4x1x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: tosa.reciprocal %[[safeSum]] : (tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>
 
 // Weighted sum of the partial outputs across splits, still in f32.
-// CHECK: tosa.reduce_sum %{{.+}} {axis = 1 : i32} : (tensor<4x8x1x32xf32>) -> tensor<4x1x1x32xf32>
+// CHECK: tosa.reduce_sum %{{.+}} axis(1) : (tensor<4x8x1x32xf32>) -> tensor<4x1x1x32xf32>
 
 // Only the final combined result is cast back to the f16 storage type.
 // CHECK: tosa.cast %{{.+}} : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xf16>
@@ -44,5 +44,5 @@
 // BF16-LABEL: func.func @rock_attention_gpu
 // BF16: tosa.reshape %{{.+}} : (tensor<1024xbf16>, !tosa.shape<4>) -> tensor<4x8x1x32xbf16>
 // BF16: tosa.cast %{{.+}} : (tensor<4x8x1x32xbf16>) -> tensor<4x8x1x32xf32>
-// BF16: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
+// BF16: tosa.reduce_max %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
 // BF16: tosa.cast %{{.+}} : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xbf16>

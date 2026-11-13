@@ -8,24 +8,24 @@
 
 module {
   func.func private @forward__part_0(%arg0: tensor<1x64x56x56xf32>, %arg1: tensor<128x64x1x1xf32>, %arg2: tensor<1x128x1x1xf32>, %arg3: tensor<1x128x1x1xf32>, %arg4: tensor<1x128x1x1xf32>, %arg5: tensor<1x128x1x1xf32>, %arg6: tensor<1x128x28x28xf32>) -> (tensor<1x128x28x28xf32>) {
-    %1 = tosa.transpose %arg0 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
-    %const_shape = "tosa.const_shape"() { values = dense<[128, 1, 1, 64]> : tensor<4xindex> } : () -> !tosa.shape<4>
+    %1 = tosa.transpose %arg0 perms([0, 2, 3, 1]) : (tensor<1x64x56x56xf32>) -> tensor<1x56x56x64xf32>
+    %const_shape = "tosa.const_shape"() <{values = dense<[128, 1, 1, 64]> : tensor<4xindex>}> : () -> !tosa.shape<4>
     %2 = tosa.reshape %arg1, %const_shape : (tensor<128x64x1x1xf32>, !tosa.shape<4>) -> tensor<128x1x1x64xf32>
     %3 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<128xf32>}> : () -> tensor<128xf32>
     %input_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
     %weight_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
-    %_slice_start = "tosa.const_shape"() { values = dense<[0, 0, 0, 0]> : tensor<4xindex> } : () -> !tosa.shape<4>
-    %_slice_size = "tosa.const_shape"() { values = dense<[1, 55, 55, 64]> : tensor<4xindex> } : () -> !tosa.shape<4>
+    %_slice_start = "tosa.const_shape"() <{values = dense<[0, 0, 0, 0]> : tensor<4xindex>}> : () -> !tosa.shape<4>
+    %_slice_size = "tosa.const_shape"() <{values = dense<[1, 55, 55, 64]> : tensor<4xindex>}> : () -> !tosa.shape<4>
     %_sliced = tosa.slice %1, %_slice_start, %_slice_size : (tensor<1x56x56x64xf32>, !tosa.shape<4>, !tosa.shape<4>) -> tensor<1x55x55x64xf32>
-    %5 = tosa.conv2d %_sliced, %2, %3, %input_zp, %weight_zp {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 2, 2>} : (tensor<1x55x55x64xf32>, tensor<128x1x1x64xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x28x28x128xf32>
-    %6 = tosa.transpose %5 {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x28x28x128xf32>) -> tensor<1x128x28x28xf32>
+    %5 = tosa.conv2d %_sliced, %2, %3, %input_zp, %weight_zp pad([0, 0, 0, 0]) stride([2, 2]) dilation([1, 1]) acc_type(f32) : (tensor<1x55x55x64xf32>, tensor<128x1x1x64xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x28x28x128xf32>
+    %6 = tosa.transpose %5 perms([0, 3, 1, 2]) : (tensor<1x28x28x128xf32>) -> tensor<1x128x28x28xf32>
     %7 = tosa.sub %6, %arg2 : (tensor<1x128x28x28xf32>, tensor<1x128x1x1xf32>) -> tensor<1x128x28x28xf32>
     %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
     %8 = tosa.mul %7, %arg3, %shift : (tensor<1x128x28x28xf32>, tensor<1x128x1x1xf32>, tensor<1xi8>) -> tensor<1x128x28x28xf32>
     %9 = tosa.mul %8, %arg4, %shift : (tensor<1x128x28x28xf32>, tensor<1x128x1x1xf32>, tensor<1xi8>) -> tensor<1x128x28x28xf32>
     %10 = tosa.add %9, %arg5 : (tensor<1x128x28x28xf32>, tensor<1x128x1x1xf32>) -> tensor<1x128x28x28xf32>
     %11 = tosa.add %arg6, %10 : (tensor<1x128x28x28xf32>, tensor<1x128x28x28xf32>) -> tensor<1x128x28x28xf32>
-    %12 = tosa.clamp %11 {max_val = 3.40282347E+38 : f32, min_val = 0.000000e+00 : f32} : (tensor<1x128x28x28xf32>) -> tensor<1x128x28x28xf32>
+    %12 = tosa.clamp %11 min_val(0.000000e+00 : f32) max_val(3.40282347E+38 : f32) : (tensor<1x128x28x28xf32>) -> tensor<1x128x28x28xf32>
     return %12 : tensor<1x128x28x28xf32>
   }
 }

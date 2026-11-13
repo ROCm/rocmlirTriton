@@ -31,7 +31,7 @@ module {
     %11 = "tosa.const"() <{values = dense<1> : tensor<2x8xi32>}> : () -> tensor<2x8xi32>
     %12 = "tosa.const"() <{values = dense<[[0], [1], [2], [3]]> : tensor<4x1xi32>}> : () -> tensor<4x1xi32>
     %expanded = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [2, 4, 18, 64] : tensor<9216xf16> into tensor<2x4x18x64xf16>
-    %13 = tosa.transpose %expanded {perms = array<i32: 0, 2, 1, 3>} : (tensor<2x4x18x64xf16>) -> tensor<2x18x4x64xf16>
+    %13 = tosa.transpose %expanded perms([0, 2, 1, 3]) : (tensor<2x4x18x64xf16>) -> tensor<2x18x4x64xf16>
     %expanded_0 = tensor.expand_shape %arg0 [[0, 1]] output_shape [1, 1] : tensor<1xi32> into tensor<1x1xi32>
     %14 = tosa.mul %expanded_0, %10, %8 : (tensor<1x1xi32>, tensor<4x1xi32>, tensor<1xi8>) -> tensor<4x1xi32>
     %15 = tosa.add %14, %12 : (tensor<4x1xi32>, tensor<4x1xi32>) -> tensor<4x1xi32>
@@ -54,7 +54,7 @@ module {
     %expanded_4 = tensor.expand_shape %arg2 [[0, 1, 2, 3, 4]] output_shape [2, 2, 1, 8, 64] : tensor<2048xf16> into tensor<2x2x1x8x64xf16>
     %28 = tosa.mul %expanded_4, %5, %8 : (tensor<2x2x1x8x64xf16>, tensor<2x2x7x8x64xf16>, tensor<1xi8>) -> tensor<2x2x7x8x64xf16>
     %expanded_5 = tensor.expand_shape %arg3 [[0, 1, 2, 3, 4]] output_shape [2, 2, 1, 8, 64] : tensor<2048xf16> into tensor<2x2x1x8x64xf16>
-    %29 = tosa.transpose %expanded_5 {perms = array<i32: 0, 1, 2, 4, 3>} : (tensor<2x2x1x8x64xf16>) -> tensor<2x2x1x64x8xf16>
+    %29 = tosa.transpose %expanded_5 perms([0, 1, 2, 4, 3]) : (tensor<2x2x1x8x64xf16>) -> tensor<2x2x1x64x8xf16>
     %30 = tosa.mul %29, %4, %8 : (tensor<2x2x1x64x8xf16>, tensor<2x2x7x64x8xf16>, tensor<1xi8>) -> tensor<2x2x7x64x8xf16>
     %collapsed = tensor.collapse_shape %extracted_slice [[0, 1], [2], [3]] : tensor<2x14x4x64xf16> into tensor<28x4x64xf16>
     %collapsed_6 = tensor.collapse_shape %30 [[0, 1, 2], [3], [4]] : tensor<2x2x7x64x8xf16> into tensor<28x64x8xf16>
@@ -66,11 +66,11 @@ module {
     %35 = tosa.cast %27 : (tensor<2x14x4x8xi8>) -> tensor<2x14x4x8xi1>
     %36 = tosa.select %35, %2, %34 : (tensor<2x14x4x8xi1>, tensor<2x14x4x8xf16>, tensor<2x14x4x8xf16>) -> tensor<2x14x4x8xf16>
     %37 = tosa.cast %36 : (tensor<2x14x4x8xf16>) -> tensor<2x14x4x8xf32>
-    %38 = tosa.reduce_max %37 {axis = 3 : i32} : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x1xf32>
+    %38 = tosa.reduce_max %37 axis(3) : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x1xf32>
     %39 = tosa.mul %38, %1, %8 : (tensor<2x14x4x1xf32>, tensor<2x14x4x8xf32>, tensor<1xi8>) -> tensor<2x14x4x8xf32>
     %40 = tosa.sub %37, %39 : (tensor<2x14x4x8xf32>, tensor<2x14x4x8xf32>) -> tensor<2x14x4x8xf32>
     %41 = tosa.exp %40 : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x8xf32>
-    %42 = tosa.reduce_sum %41 {axis = 3 : i32} : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x1xf32>
+    %42 = tosa.reduce_sum %41 axis(3) : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x1xf32>
     %43 = tosa.mul %42, %1, %8 : (tensor<2x14x4x1xf32>, tensor<2x14x4x8xf32>, tensor<1xi8>) -> tensor<2x14x4x8xf32>
     %44 = tosa.reciprocal %43 : (tensor<2x14x4x8xf32>) -> tensor<2x14x4x8xf32>
     %45 = tosa.mul %41, %44, %8 : (tensor<2x14x4x8xf32>, tensor<2x14x4x8xf32>, tensor<1xi8>) -> tensor<2x14x4x8xf32>
@@ -79,7 +79,7 @@ module {
     %collapsed_9 = tensor.collapse_shape %28 [[0, 1, 2], [3], [4]] : tensor<2x2x7x8x64xf16> into tensor<28x8x64xf16>
     %47 = tosa.matmul %collapsed_8, %collapsed_9, %3, %3 {acc_type = f32} : (tensor<28x4x8xf16>, tensor<28x8x64xf16>, tensor<1xf16>, tensor<1xf16>) -> tensor<28x4x64xf16>
     %expanded_10 = tensor.expand_shape %47 [[0, 1], [2], [3]] output_shape [2, 14, 4, 64] : tensor<28x4x64xf16> into tensor<2x14x4x64xf16>
-    %48 = tosa.transpose %expanded_10 {perms = array<i32: 0, 2, 1, 3>} : (tensor<2x14x4x64xf16>) -> tensor<2x4x14x64xf16>
+    %48 = tosa.transpose %expanded_10 perms([0, 2, 1, 3]) : (tensor<2x14x4x64xf16>) -> tensor<2x4x14x64xf16>
     %collapsed_11 = tensor.collapse_shape %48 [[0, 1, 2, 3]] : tensor<2x4x14x64xf16> into tensor<7168xf16>
     return %collapsed_11 : tensor<7168xf16>
   }

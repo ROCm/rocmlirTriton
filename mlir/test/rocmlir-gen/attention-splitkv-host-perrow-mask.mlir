@@ -40,7 +40,7 @@
 // CHECK: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
 
 // LSE re-normalization across the splitKV axis (axis = 1) in f32.
-// CHECK: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
+// CHECK: tosa.reduce_max %{{.+}} axis(1) : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
 
 // Final combined result cast back to f16 storage.
 // CHECK: tosa.cast %{{.+}} : (tensor<1x1x4x32xf32>) -> tensor<1x1x4x32xf16>
@@ -48,7 +48,7 @@
 // PREFIX-LABEL: func.func @rock_attention_gpu
 // PREFIX: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
 // PREFIX: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
-// PREFIX: tosa.reduce_max %{{.+}} {axis = 1 : i32} : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
+// PREFIX: tosa.reduce_max %{{.+}} axis(1) : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
 
 // With 32-key tiles, each split covers one tile. Prefix offset 62 puts the
 // rows' last visible keys (62..65) on both sides of the split boundary at key

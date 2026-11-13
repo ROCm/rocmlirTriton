@@ -4,41 +4,41 @@
 // RUN: rocmlir-opt --rocmlir-custom-tosa-decompose --split-input-file %s | FileCheck %s
 
 // CHECK: @bwd_data_conv2d
-// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
-// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
-// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 2, 2, 2, 2>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
+// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} axis(1) : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
+// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] axis(2) : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32>
+// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} pad([2, 2, 2, 2]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
 func.func @bwd_data_conv2d(%arg0: tensor<9xf32>, %arg1: tensor<9xf32>) -> (tensor<25xf32>) {
-  %0 = tosa.const_shape  {values = dense<25> : tensor<1xindex>} : () -> !tosa.shape<1>
+  %0 = tosa.const_shape  values(dense<25> : tensor<1xindex>) : () -> !tosa.shape<1>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %2 = tosa.const_shape  {values = dense<[1, 1, 3, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>
+  %2 = tosa.const_shape  values(dense<[1, 1, 3, 3]> : tensor<4xindex>) : () -> !tosa.shape<4>
   %3 = tosa.reshape %arg0, %2 : (tensor<9xf32>, !tosa.shape<4>) -> tensor<1x1x3x3xf32>
   %4 = tosa.reshape %arg1, %2 : (tensor<9xf32>, !tosa.shape<4>) -> tensor<1x1x3x3xf32>
-  %5 = tosa.transpose %4 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
-  %6 = tosa.transpose %3 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
-  %7 = tosa.custom %5, %6, %1, %1, %1 {acc_type = f32, dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
-  %8 = tosa.transpose %7 {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x5x5x1xf32>) -> tensor<1x1x5x5xf32>
+  %5 = tosa.transpose %4 perms([0, 2, 3, 1]) : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
+  %6 = tosa.transpose %3 perms([0, 2, 3, 1]) : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
+  %7 = tosa.custom %5, %6, %1, %1, %1 operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, dilation = array<i64: 1, 1>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
+  %8 = tosa.transpose %7 perms([0, 3, 1, 2]) : (tensor<1x5x5x1xf32>) -> tensor<1x1x5x5xf32>
   %9 = tosa.reshape %8, %0 : (tensor<1x1x5x5xf32>, !tosa.shape<1>) -> tensor<25xf32>
   return %9 : tensor<25xf32>
 }
 
 // -----
 // CHECK: @bwd_data_conv2d_stride
-// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<2048x2x2x512xf32>) -> tensor<2048x2x2x512xf32>
-// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<2048x2x2x512xf32>) -> tensor<2048x2x2x512xf32>
-// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x18x18x512xf32>, tensor<2048x2x2x512xf32>, tensor<2048xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x17x17x2048xf32>
+// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} axis(1) : (tensor<2048x2x2x512xf32>) -> tensor<2048x2x2x512xf32>
+// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] axis(2) : (tensor<2048x2x2x512xf32>) -> tensor<2048x2x2x512xf32>
+// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} pad([0, 0, 0, 0]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x18x18x512xf32>, tensor<2048x2x2x512xf32>, tensor<2048xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x17x17x2048xf32>
 func.func @bwd_data_conv2d_stride(%arg0: tensor<131072xf32>, %arg1: tensor<4194304xf32>) -> tensor<524288xf32> {
-  %0 = tosa.const_shape  {values = dense<[512, 512, 4, 4]> : tensor<4xindex>} : () -> !tosa.shape<4>
+  %0 = tosa.const_shape  values(dense<[512, 512, 4, 4]> : tensor<4xindex>) : () -> !tosa.shape<4>
   %1 = tosa.reshape %arg1, %0 : (tensor<4194304xf32>, !tosa.shape<4>) -> tensor<512x512x4x4xf32>
-  %2 = tosa.const_shape  {values = dense<[1, 512, 16, 16]> : tensor<4xindex>} : () -> !tosa.shape<4>
+  %2 = tosa.const_shape  values(dense<[1, 512, 16, 16]> : tensor<4xindex>) : () -> !tosa.shape<4>
   %3 = tosa.reshape %arg0, %2 : (tensor<131072xf32>, !tosa.shape<4>) -> tensor<1x512x16x16xf32>
-  %4 = tosa.transpose %3 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x512x16x16xf32>) -> tensor<1x16x16x512xf32>
-  %5 = tosa.transpose %1 {perms = array<i32: 0, 2, 3, 1>} : (tensor<512x512x4x4xf32>) -> tensor<512x4x4x512xf32>
+  %4 = tosa.transpose %3 perms([0, 2, 3, 1]) : (tensor<1x512x16x16xf32>) -> tensor<1x16x16x512xf32>
+  %5 = tosa.transpose %1 perms([0, 2, 3, 1]) : (tensor<512x512x4x4xf32>) -> tensor<512x4x4x512xf32>
   %6 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %7 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %8 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<512xf32>}> : () -> tensor<512xf32>
-  %9 = tosa.custom %4, %5, %8, %6, %7 {acc_type = f32, dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 2, 2>} : (tensor<1x16x16x512xf32>, tensor<512x4x4x512xf32>, tensor<512xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x512xf32>
-  %10 = tosa.transpose %9 {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x32x32x512xf32>) -> tensor<1x512x32x32xf32>
-  %11 = tosa.const_shape  {values = dense<524288> : tensor<1xindex>} : () -> !tosa.shape<1>
+  %9 = tosa.custom %4, %5, %8, %6, %7 operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, dilation = array<i64: 1, 1>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 2, 2>} : (tensor<1x16x16x512xf32>, tensor<512x4x4x512xf32>, tensor<512xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x512xf32>
+  %10 = tosa.transpose %9 perms([0, 3, 1, 2]) : (tensor<1x32x32x512xf32>) -> tensor<1x512x32x32xf32>
+  %11 = tosa.const_shape  values(dense<524288> : tensor<1xindex>) : () -> !tosa.shape<1>
   %12 = tosa.reshape %10, %11 : (tensor<1x512x32x32xf32>, !tosa.shape<1>) -> tensor<524288xf32>
   return %12 : tensor<524288xf32>
 }
@@ -50,62 +50,62 @@ func.func @bwd_data_conv2d_stride(%arg0: tensor<131072xf32>, %arg1: tensor<41943
 // CHECK: %[[IN0:.*]] = tosa.slice %arg0
 // CHECK: %[[FI0:.*]] = tosa.slice %arg1
 // CHECK: %[[BI0:.*]] = tosa.slice %arg2
-// CHECK: %[[C0:.*]] = tosa.conv2d %[[IN0]], %[[FI0]], %[[BI0]], %[[IZP]], %[[WZP]] {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x8x8x2xf32>, tensor<2x3x3x2xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x2xf32>
+// CHECK: %[[C0:.*]] = tosa.conv2d %[[IN0]], %[[FI0]], %[[BI0]], %[[IZP]], %[[WZP]] pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x8x8x2xf32>, tensor<2x3x3x2xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x2xf32>
 // CHECK: %[[IN1:.*]] = tosa.slice %arg0
 // CHECK: %[[FI1:.*]] = tosa.slice %arg1
 // CHECK: %[[BI1:.*]] = tosa.slice %arg2
-// CHECK: %[[C1:.*]] = tosa.conv2d %[[IN1]], %[[FI1]], %[[BI1]], %[[IZP]], %[[WZP]] {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x8x8x2xf32>, tensor<2x3x3x2xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x2xf32>
-// CHECK: tosa.concat %[[C0]], %[[C1]] {axis = 3 : i32} : (tensor<1x8x8x2xf32>, tensor<1x8x8x2xf32>) -> tensor<1x8x8x4xf32>
+// CHECK: %[[C1:.*]] = tosa.conv2d %[[IN1]], %[[FI1]], %[[BI1]], %[[IZP]], %[[WZP]] pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x8x8x2xf32>, tensor<2x3x3x2xf32>, tensor<2xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x2xf32>
+// CHECK: tosa.concat %[[C0]], %[[C1]] axis(3) : (tensor<1x8x8x2xf32>, tensor<1x8x8x2xf32>) -> tensor<1x8x8x4xf32>
 func.func @forward_group_conv2d(%arg0: tensor<1x8x8x4xf32>, %arg1: tensor<4x3x3x2xf32>, %arg2: tensor<4xf32>) -> tensor<1x8x8x4xf32> {
   %izp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %wzp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %0 = tosa.conv2d %arg0, %arg1, %arg2, %izp, %wzp {acc_type = f32, dilation = array<i64: 1, 1>, group = 2 : i64, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x8x8x4xf32>, tensor<4x3x3x2xf32>, tensor<4xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x4xf32>
+  %0 = tosa.conv2d %arg0, %arg1, %arg2, %izp, %wzp pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) {group = 2 : i64} : (tensor<1x8x8x4xf32>, tensor<4x3x3x2xf32>, tensor<4xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x8x8x4xf32>
   return %0 : tensor<1x8x8x4xf32>
 }
 
 // -----
 // CHECK: func @bwd_data_conv2d_dilation
-// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
-// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
-// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 2, 2>, pad = array<i64: 3, 3, 3, 3>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
+// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} axis(1) : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
+// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] axis(2) : (tensor<1x3x3x1xf32>) -> tensor<1x3x3x1xf32> 
+// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} pad([3, 3, 3, 3]) stride([1, 1]) dilation([2, 2]) acc_type(f32) : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
 func.func @bwd_data_conv2d_dilation(%arg0: tensor<9xf32>, %arg1: tensor<9xf32>) -> (tensor<25xf32>) {
-  %0 = tosa.const_shape  {values = dense<25> : tensor<1xindex>} : () -> !tosa.shape<1>
+  %0 = tosa.const_shape  values(dense<25> : tensor<1xindex>) : () -> !tosa.shape<1>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %2 = tosa.const_shape  {values = dense<[1, 1, 3, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>
+  %2 = tosa.const_shape  values(dense<[1, 1, 3, 3]> : tensor<4xindex>) : () -> !tosa.shape<4>
   %3 = tosa.reshape %arg0, %2 : (tensor<9xf32>, !tosa.shape<4>) -> tensor<1x1x3x3xf32>
   %4 = tosa.reshape %arg1, %2 : (tensor<9xf32>, !tosa.shape<4>) -> tensor<1x1x3x3xf32>
-  %5 = tosa.transpose %4 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
-  %6 = tosa.transpose %3 {perms = array<i32: 0, 2, 3, 1>} : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
-  %7 = tosa.custom %5, %6, %1, %1, %1 {acc_type = f32, dilation = array<i64: 2, 2>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
-  %8 = tosa.transpose %7 {perms = array<i32: 0, 3, 1, 2>} : (tensor<1x5x5x1xf32>) -> tensor<1x1x5x5xf32>
+  %5 = tosa.transpose %4 perms([0, 2, 3, 1]) : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
+  %6 = tosa.transpose %3 perms([0, 2, 3, 1]) : (tensor<1x1x3x3xf32>) -> tensor<1x3x3x1xf32>
+  %7 = tosa.custom %5, %6, %1, %1, %1 operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, dilation = array<i64: 2, 2>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x3x3x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x5x5x1xf32>
+  %8 = tosa.transpose %7 perms([0, 3, 1, 2]) : (tensor<1x5x5x1xf32>) -> tensor<1x1x5x5xf32>
   %9 = tosa.reshape %8, %0 : (tensor<1x1x5x5xf32>, !tosa.shape<1>) -> tensor<25xf32>
   return %9 : tensor<25xf32>
 }
 
 // -----
 // CHECK: func @bwd_data_conv1d
-// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} {axis = 1 : i32} : (tensor<3x1x1x64xf32>) -> tensor<3x1x1x64xf32>
-// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] {axis = 2 : i32} : (tensor<3x1x1x64xf32>) -> tensor<3x1x1x64xf32>
-// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x224x1x3xf32>, tensor<3x1x1x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x224x1x64xf32>
+// CHECK: %[[reverse1:.*]] = tosa.reverse %{{.*}} axis(1) : (tensor<3x1x1x64xf32>) -> tensor<3x1x1x64xf32>
+// CHECK: %[[reverse2:.*]] = tosa.reverse %[[reverse1]] axis(2) : (tensor<3x1x1x64xf32>) -> tensor<3x1x1x64xf32>
+// CHECK: tosa.conv2d %{{.*}}, %[[reverse2]], %{{.*}}, %{{.*}}, %{{.*}} pad([0, 0, 0, 0]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x224x1x3xf32>, tensor<3x1x1x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x224x1x64xf32>
 func.func @bwd_data_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2: tensor<192xf32>) -> tensor<14336xf32> {
-  %0 = tosa.const_shape  {values = dense<14336> : tensor<1xindex>} : () -> !tosa.shape<1>
-  %1 = tosa.const_shape  {values = dense<[1, 224, 64]> : tensor<3xindex>} : () -> !tosa.shape<3>
+  %0 = tosa.const_shape  values(dense<14336> : tensor<1xindex>) : () -> !tosa.shape<1>
+  %1 = tosa.const_shape  values(dense<[1, 224, 64]> : tensor<3xindex>) : () -> !tosa.shape<3>
   %2 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<64xf32>}> : () -> tensor<64xf32>
   %3 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %4 = tosa.const_shape  {values = dense<[64, 1, 1, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>
-  %5 = tosa.const_shape  {values = dense<[1, 224, 1, 3]> : tensor<4xindex>} : () -> !tosa.shape<4>
-  %6 = tosa.const_shape  {values = dense<[1, 3, 224]> : tensor<3xindex>} : () -> !tosa.shape<3>
+  %4 = tosa.const_shape  values(dense<[64, 1, 1, 3]> : tensor<4xindex>) : () -> !tosa.shape<4>
+  %5 = tosa.const_shape  values(dense<[1, 224, 1, 3]> : tensor<4xindex>) : () -> !tosa.shape<4>
+  %6 = tosa.const_shape  values(dense<[1, 3, 224]> : tensor<3xindex>) : () -> !tosa.shape<3>
   %7 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1x64x224xf32>}> : () -> tensor<1x64x224xf32>
-  %8 = tosa.const_shape  {values = dense<[1, 64, 1]> : tensor<3xindex>} : () -> !tosa.shape<3>
+  %8 = tosa.const_shape  values(dense<[1, 64, 1]> : tensor<3xindex>) : () -> !tosa.shape<3>
   %9 = tosa.reshape %arg0, %8 : (tensor<64xf32>, !tosa.shape<3>) -> tensor<1x64x1xf32>
   %10 = tosa.add %9, %7 : (tensor<1x64x1xf32>, tensor<1x64x224xf32>) -> tensor<1x64x224xf32>
   %11 = tosa.reshape %arg1, %6 : (tensor<672xf32>, !tosa.shape<3>) -> tensor<1x3x224xf32>
-  %12 = tosa.transpose %11 {perms = array<i32: 0, 2, 1>} : (tensor<1x3x224xf32>) -> tensor<1x224x3xf32>
+  %12 = tosa.transpose %11 perms([0, 2, 1]) : (tensor<1x3x224xf32>) -> tensor<1x224x3xf32>
   %13 = tosa.reshape %12, %5 : (tensor<1x224x3xf32>, !tosa.shape<4>) -> tensor<1x224x1x3xf32>
   %14 = tosa.reshape %arg2, %4 : (tensor<192xf32>, !tosa.shape<4>) -> tensor<64x1x1x3xf32>
-  %15 = tosa.custom %13, %14, %2, %3, %3 {acc_type = f32, conv_kind = "bwd_data", dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x224x1x3xf32>, tensor<64x1x1x3xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x224x1x64xf32>
+  %15 = tosa.custom %13, %14, %2, %3, %3 operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, conv_kind = "bwd_data", dilation = array<i64: 1, 1>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<1x224x1x3xf32>, tensor<64x1x1x3xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x224x1x64xf32>
   %16 = tosa.reshape %15, %1 : (tensor<1x224x1x64xf32>, !tosa.shape<3>) -> tensor<1x224x64xf32>
-  %17 = tosa.transpose %16 {perms = array<i32: 0, 2, 1>} : (tensor<1x224x64xf32>) -> tensor<1x64x224xf32>
+  %17 = tosa.transpose %16 perms([0, 2, 1]) : (tensor<1x224x64xf32>) -> tensor<1x64x224xf32>
   %18 = tosa.add %17, %10 : (tensor<1x64x224xf32>, tensor<1x64x224xf32>) -> tensor<1x64x224xf32>
   %19 = tosa.reshape %18, %0 : (tensor<1x64x224xf32>, !tosa.shape<1>) -> tensor<14336xf32>
   return %19 : tensor<14336xf32>
@@ -130,7 +130,7 @@ func.func @bwd_data_conv2d_empty_slice(%grad_out: tensor<1x1x4x1xf32>, %weight: 
   %izp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %wzp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %bias = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %0 = tosa.custom %grad_out, %weight, %bias, %izp, %wzp {acc_type = f32, dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 2, 0, 0, 0>, stride = array<i64: 2, 1>} : (tensor<1x1x4x1xf32>, tensor<1x4x1x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2x4x1xf32>
+  %0 = tosa.custom %grad_out, %weight, %bias, %izp, %wzp operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, dilation = array<i64: 1, 1>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 2, 0, 0, 0>, stride = array<i64: 2, 1>} : (tensor<1x1x4x1xf32>, tensor<1x4x1x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2x4x1xf32>
   return %0 : tensor<1x2x4x1xf32>
 }
 
@@ -162,7 +162,7 @@ func.func @bwd_data_conv2d_kprime_one_asym_weight_pad(%grad_out: tensor<1x2x2x1x
   %izp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %wzp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %bias = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-  %0 = tosa.custom %grad_out, %weight, %bias, %izp, %wzp {acc_type = f32, dilation = array<i64: 1, 1>, domain_name = "rocmlir", group = 1 : i64, implementation_attrs = "", operator_name = "conv_bwd_data", out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 3, 3>} : (tensor<1x2x2x1xf32>, tensor<1x3x2x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x6x5x1xf32>
+  %0 = tosa.custom %grad_out, %weight, %bias, %izp, %wzp operator_name("conv_bwd_data") domain_name("rocmlir") implementation_attrs("") {acc_type = f32, dilation = array<i64: 1, 1>, group = 1 : i64, out_pad = array<i64: 0, 0, 0, 0>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 3, 3>} : (tensor<1x2x2x1xf32>, tensor<1x3x2x1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x6x5x1xf32>
   return %0 : tensor<1x6x5x1xf32>
 }
 

@@ -170,7 +170,7 @@ func.func @preserve_f8e8m0fnu_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> 
 func.func @boolean_fp_to_int_round_trip(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf32> {
   %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
   %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
-  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %asInt = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi8>
   %cond = tosa.cast %asInt : (tensor<4xi8>) -> tensor<4xi1>
   %0 = tosa.select %cond, %arg0, %arg1 : (tensor<4xi1>, tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>
   return %0 : tensor<4xf32>
@@ -188,7 +188,7 @@ func.func @boolean_fp_to_int_round_trip(%arg0: tensor<4xf32>, %arg1: tensor<4xf3
 func.func @boolean_fp_to_int_cast(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xi8> {
   %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
   %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
-  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %asInt = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi8>
   return %asInt : tensor<4xi8>
 }
 
@@ -198,7 +198,7 @@ func.func @boolean_fp_to_int_cast(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) ->
 // CHECK-LABEL: @preserve_fp_to_int_cast
 // CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xi8>
 func.func @preserve_fp_to_int_cast(%arg0: tensor<4xf32>) -> tensor<4xi8> {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %0 = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi8>
   return %0 : tensor<4xi8>
 }
 
@@ -210,7 +210,7 @@ func.func @preserve_fp_to_int_cast(%arg0: tensor<4xf32>) -> tensor<4xi8> {
 // CHECK: tosa.custom{{.*}}"fp_to_int_cast"{{.*}}(tensor<4xf32>) -> tensor<4xi8>
 func.func @preserve_fp_to_int_cast_of_widened_int(%arg0: tensor<4xi32>) -> tensor<4xi8> {
   %asFloat = tosa.cast %arg0 : (tensor<4xi32>) -> tensor<4xf32>
-  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %0 = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi8>
   return %0 : tensor<4xi8>
 }
 
@@ -228,7 +228,7 @@ func.func @preserve_fp_to_int_cast_of_widened_int(%arg0: tensor<4xi32>) -> tenso
 func.func @boolean_fp_to_int_cast_shared_widening(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> (tensor<4xi8>, tensor<4xf32>) {
   %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
   %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
-  %asInt = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi8>
+  %asInt = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi8>
   return %asInt, %asFloat : tensor<4xi8>, tensor<4xf32>
 }
 
@@ -241,7 +241,7 @@ func.func @boolean_fp_to_int_cast_shared_widening(%arg0: tensor<4xf32>, %arg1: t
 func.func @preserve_boolean_fp_to_int_cast_to_i1(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xi1> {
   %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
   %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
-  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xi1>
+  %0 = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xi1>
   return %0 : tensor<4xi1>
 }
 
@@ -254,6 +254,6 @@ func.func @preserve_boolean_fp_to_int_cast_to_i1(%arg0: tensor<4xf32>, %arg1: te
 func.func @preserve_boolean_fp_to_int_cast_to_float(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf16> {
   %pred = tosa.greater %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>
   %asFloat = tosa.cast %pred : (tensor<4xi1>) -> tensor<4xf32>
-  %0 = tosa.custom %asFloat {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<4xf32>) -> tensor<4xf16>
+  %0 = tosa.custom %asFloat operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<4xf32>) -> tensor<4xf16>
   return %0 : tensor<4xf16>
 }

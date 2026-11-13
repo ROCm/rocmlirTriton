@@ -9,7 +9,7 @@ module {
   func.func @test_fusion(%arg0: tensor<1x64xf32>, %arg1: tensor<1x64xf32>) -> tensor<1x64xf32> attributes {rock.kernel, rock.elementwise, rock.arch = "##TOKEN_ARCH##", rock.block_size = 64 : i32} {
     %shift = arith.constant dense<0> : tensor<1xi8>
     %0 = tosa.mul %arg0, %arg1, %shift : (tensor<1x64xf32>, tensor<1x64xf32>, tensor<1xi8>) -> tensor<1x64xf32>
-    %1 = tosa.clamp %0 {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<1x64xf32>) -> tensor<1x64xf32>
+    %1 = tosa.clamp %0 min_val(0.0 : f32) max_val(6.0 : f32) : (tensor<1x64xf32>) -> tensor<1x64xf32>
     return %1 : tensor<1x64xf32>
   }
 }

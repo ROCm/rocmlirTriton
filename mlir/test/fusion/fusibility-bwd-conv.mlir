@@ -21,7 +21,7 @@ module {
       strides = [2 : index, 2 : index]
     } : tensor<1x64x3x7x7xf32>, tensor<256x1x3x230x230xf32> -> tensor<256x1x64x112x112xf32>
     %add = "tosa.add"(%conv, %arg3) : (tensor<256x1x64x112x112xf32>, tensor<256x1x64x112x112xf32>) -> tensor<256x1x64x112x112xf32>
-    %relu = tosa.clamp %add {max_val = 3.40282347E+38 : f32, min_val = 0.000000e+00 : f32} : (tensor<256x1x64x112x112xf32>) -> tensor<256x1x64x112x112xf32>
+    %relu = tosa.clamp %add min_val(0.000000e+00 : f32) max_val(3.40282347E+38 : f32) : (tensor<256x1x64x112x112xf32>) -> tensor<256x1x64x112x112xf32>
     return %relu : tensor<256x1x64x112x112xf32>
   }
 }

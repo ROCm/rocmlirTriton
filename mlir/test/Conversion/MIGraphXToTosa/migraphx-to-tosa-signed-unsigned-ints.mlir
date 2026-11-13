@@ -52,7 +52,7 @@ func.func @migraphx_literal_dense_f32() -> !migraphx.shaped<4xf32, 1> {
 // CHECK-SAME: -> tensor<9408xi8> {
 func.func @migraphx_literal_zero() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1> {
   // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<0> : tensor<64x3x7x7xi8>}> : () -> tensor<64x3x7x7xi8>
-  // CHECK: %[[constshape:.+]] = tosa.const_shape  {values = dense<9408> : tensor<1xindex>} : () -> !tosa.shape<1>
+  // CHECK: %[[constshape:.+]] = tosa.const_shape  values(dense<9408> : tensor<1xindex>) : () -> !tosa.shape<1>
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xi8>, !tosa.shape<1>) -> tensor<9408xi8>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xi8>
   %0 = migraphx.literal (dense<0> : tensor<64x3x7x7xsi8>) : <64x3x7x7xsi8, 147x49x7x1>
@@ -63,7 +63,7 @@ func.func @migraphx_literal_zero() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1>
 // CHECK-SAME: -> tensor<9408xi8> {
 func.func @migraphx_literal_negative() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1> {
   // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<-1> : tensor<64x3x7x7xi8>}> : () -> tensor<64x3x7x7xi8>
-  // CHECK: %[[constshape:.+]] = tosa.const_shape  {values = dense<9408> : tensor<1xindex>} : () -> !tosa.shape<1>
+  // CHECK: %[[constshape:.+]] = tosa.const_shape  values(dense<9408> : tensor<1xindex>) : () -> !tosa.shape<1>
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xi8>, !tosa.shape<1>) -> tensor<9408xi8>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xi8>
   %0 = migraphx.literal (dense<-1> : tensor<64x3x7x7xsi8>) : <64x3x7x7xsi8, 147x49x7x1>
@@ -127,8 +127,8 @@ func.func @migraphx_div_ui32(%arg0: !migraphx.shaped<1x36x384x64xui32, 884736x24
 }
 
 // CHECK-LABEL: func @dequantize_scale_bias_ui32
-// CHECK: tosa.custom %{{.*}} {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<1x112x112x64xi32>) -> tensor<1x112x112x64xf32>
-// CHECK: tosa.custom %{{.*}} {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<1x1x1x64xi32>) -> tensor<1x1x1x64xf32>
+// CHECK: tosa.custom %{{.*}} operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<1x112x112x64xi32>) -> tensor<1x112x112x64xf32>
+// CHECK: tosa.custom %{{.*}} operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<1x1x1x64xi32>) -> tensor<1x1x1x64xf32>
 // CHECK: tosa.sub
 // CHECK: tosa.mul
 func.func @dequantize_scale_bias_ui32(%arg: !migraphx.shaped<1x112x112x64xui32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xui32, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {

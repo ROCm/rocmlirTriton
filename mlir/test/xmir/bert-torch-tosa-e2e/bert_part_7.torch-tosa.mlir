@@ -5,7 +5,7 @@
 // CHECK: [1 1 1]
 module {
   func.func @bert_part_7(%arg0: tensor<1x12x1536xf32>, %arg1: tensor<1536x384xf32>, %arg2: tensor<1x1x384xf32>, %arg3: tensor<1x12x384xf32>) -> (tensor<1x12x384xf32>) {
-      %const_shape = "tosa.const_shape"() { values = dense<[1, 1536, 384]> : tensor<3xindex> } : () -> !tosa.shape<3>
+      %const_shape = "tosa.const_shape"() <{values = dense<[1, 1536, 384]> : tensor<3xindex>}> : () -> !tosa.shape<3>
       %0 = "tosa.reshape"(%arg1, %const_shape) : (tensor<1536x384xf32>, !tosa.shape<3>) -> tensor<1x1536x384xf32>
       %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
       %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>

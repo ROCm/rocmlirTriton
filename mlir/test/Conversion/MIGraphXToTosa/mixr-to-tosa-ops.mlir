@@ -6,7 +6,7 @@
 module  {
   // CHECK-LABEL: func @literal_zero
   // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<0.000000e+00> : tensor<64x3x7x7xf16>}> : () -> tensor<64x3x7x7xf16>
-  // CHECK: %[[constshape:.+]] = tosa.const_shape  {values = dense<9408> : tensor<1xindex>} : () -> !tosa.shape<1>
+  // CHECK: %[[constshape:.+]] = tosa.const_shape  values(dense<9408> : tensor<1xindex>) : () -> !tosa.shape<1>
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xf16>, !tosa.shape<1>) -> tensor<9408xf16>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xf16>
   func.func @literal_zero() -> !migraphx.shaped<64x3x7x7xf16, 147x49x7x1> {
@@ -264,11 +264,11 @@ module  {
 
   // CHECK-LABEL: func.func @matmul_broadcast_op
   func.func @matmul_broadcast_op(%arg0: !migraphx.shaped<64x64x2304xf16, 147456x2304x1>, %arg1: !migraphx.shaped<64x64x768xf16, 49152x768x1>, %arg2: !migraphx.shaped<1x768x2304xf16, 1769472x2304x1>) -> !migraphx.shaped<64x64x2304xf16, 147456x2304x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr"} {
-    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  {values = dense<[1, 768, 2304]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  values(dense<[1, 768, 2304]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG2:.*]] = tosa.reshape %arg2, %[[constshape]]
-    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  {values = dense<[64, 64, 768]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  values(dense<[64, 64, 768]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG1:.*]] = tosa.reshape %arg1, %[[constshape2]]
-    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  {values = dense<[64, 64, 2304]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  values(dense<[64, 64, 2304]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0, %[[constshape3]]
     // CHECK-DAG: %[[INPUT:.*]] = tosa.reshape %[[ARG2]], %[[constshape]]
     %0 = migraphx.broadcast %arg2 {axis = 0, out_lens = [64, 768, 2304]} : <1x768x2304xf16, 1769472x2304x1> -> <64x768x2304xf16, 0x2304x1>
@@ -278,7 +278,7 @@ module  {
     // CHECK-DAG: %[[MATMUL:.*]] = tosa.matmul %[[ARG1]], %[[MUL]]
     // CHECK-SAME: {acc_type = f32}
     // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[MATMUL]], %[[ARG0]]
-    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  {values = dense<9437184> : tensor<1xindex>} : () -> !tosa.shape<1>
+    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  values(dense<9437184> : tensor<1xindex>) : () -> !tosa.shape<1>
     // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[BIASED]], %[[constshape5]]
     // CHECK: return %[[RET]]
     %2 = migraphx.add %1, %arg0 : <64x64x2304xf16, 147456x2304x1>, <64x64x2304xf16, 147456x2304x1> -> <64x64x2304xf16, 147456x2304x1>
@@ -287,11 +287,11 @@ module  {
 
   // CHECK-LABEL: func.func @matmul_broadcast
   func.func @matmul_broadcast(%arg0: !migraphx.shaped<64x64x2304xf16, 147456x2304x1>, %arg1: !migraphx.shaped<64x64x768xf16, 49152x768x1>, %arg2: !migraphx.shaped<1x768x2304xf16, 1769472x2304x1>) -> !migraphx.shaped<64x64x2304xf16, 147456x2304x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr"} {
-    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  {values = dense<[1, 768, 2304]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  values(dense<[1, 768, 2304]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG2:.*]] = tosa.reshape %arg2, %[[constshape]]
-    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  {values = dense<[64, 64, 768]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  values(dense<[64, 64, 768]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG1:.*]] = tosa.reshape %arg1, %[[constshape2]]
-    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  {values = dense<[64, 64, 2304]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  values(dense<[64, 64, 2304]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0, %[[constshape3]]
     %0 = migraphx.multibroadcast %arg2 {out_dyn_dims = [], out_lens = [64, 768, 2304]} : <1x768x2304xf16, 1769472x2304x1> -> <64x768x2304xf16, 0x2304x1>
     // CHECK-DAG: %[[CST1:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<64x768x2304xf16>}> : () -> tensor<64x768x2304xf16>
@@ -300,7 +300,7 @@ module  {
     // CHECK-DAG: %[[MATMUL:.*]] = tosa.matmul %[[ARG1]], %[[MUL]]
     // CHECK-SAME: {acc_type = f32}
     // CHECK-DAG: %[[BIASED:.*]] = tosa.add %[[MATMUL]], %[[ARG0]]
-    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  {values = dense<9437184> : tensor<1xindex>} : () -> !tosa.shape<1>
+    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  values(dense<9437184> : tensor<1xindex>) : () -> !tosa.shape<1>
     // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[BIASED]], %[[constshape5]]
     // CHECK: return %[[RET]]
     %2 = migraphx.add %1, %arg0 : <64x64x2304xf16, 147456x2304x1>, <64x64x2304xf16, 147456x2304x1> -> <64x64x2304xf16, 147456x2304x1>
@@ -309,18 +309,18 @@ module  {
 
   // CHECK-LABEL: func.func @matmul_broadcast_R5
   func.func @matmul_broadcast_R5(%arg0: !migraphx.shaped<2x4x8x64x2304xf16, 4718592x1179648x147456x2304x1>, %arg1: !migraphx.shaped<2x4x8x64x768xf16, 1572864x393216x49152x768x1>, %arg2: !migraphx.shaped<1x1x1x768x2304xf16, 1769472x1769472x1769472x2304x1>) -> !migraphx.shaped<2x4x8x64x2304xf16, 4718592x1179648x147456x2304x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr"} {
-    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  {values = dense<[1, 1, 1, 768, 2304]> : tensor<5xindex>} : () -> !tosa.shape<5>
+    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  values(dense<[1, 1, 1, 768, 2304]> : tensor<5xindex>) : () -> !tosa.shape<5>
     // CHECK-DAG: %[[ARG2:.*]] = tosa.reshape %arg2, %[[constshape]]
-    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  {values = dense<[2, 4, 8, 64, 768]> : tensor<5xindex>} : () -> !tosa.shape<5>
+    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  values(dense<[2, 4, 8, 64, 768]> : tensor<5xindex>) : () -> !tosa.shape<5>
     // CHECK-DAG: %[[ARG1:.*]] = tosa.reshape %arg1, %[[constshape2]]
-    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  {values = dense<[2, 4, 8, 64, 2304]> : tensor<5xindex>} : () -> !tosa.shape<5>
+    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  values(dense<[2, 4, 8, 64, 2304]> : tensor<5xindex>) : () -> !tosa.shape<5>
     // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0, %[[constshape3]]
     %0 = migraphx.multibroadcast %arg2 {out_dyn_dims = [], out_lens = [2, 4, 8, 768, 2304]} : <1x1x1x768x2304xf16, 1769472x1769472x1769472x2304x1> -> <2x4x8x768x2304xf16, 0x0x0x2304x1>
-    // CHECK-DAG: %[[constshape4:.+]] = tosa.const_shape  {values = dense<[64, 64, 768]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape4:.+]] = tosa.const_shape  values(dense<[64, 64, 768]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[RESHAPE0:.*]] = tosa.reshape %[[ARG1]], %[[constshape4]]
     // CHECK-DAG: %[[CST1:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<2x4x8x768x2304xf16>}> : () -> tensor<2x4x8x768x2304xf16>
     // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG2]], %[[CST1]], %{{.*}}
-    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  {values = dense<[64, 768, 2304]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    // CHECK-DAG: %[[constshape5:.+]] = tosa.const_shape  values(dense<[64, 768, 2304]> : tensor<3xindex>) : () -> !tosa.shape<3>
     // CHECK-DAG: %[[RESHAPE1:.*]] = tosa.reshape %[[MUL]], %[[constshape5]]
     %1 = migraphx.dot %arg1, %0 : <2x4x8x64x768xf16, 1572864x393216x49152x768x1>, <2x4x8x768x2304xf16, 0x0x0x2304x1> -> <2x4x8x64x2304xf16, 4718592x1179648x147456x2304x1>
     // CHECK-DAG: %[[MATMUL:.*]] = tosa.matmul %[[RESHAPE0]], %[[RESHAPE1]]
@@ -343,7 +343,7 @@ module  {
 
   // CHECK-LABEL: func.func @mbcast_non_first_dim
   // COM: test for a bug in how mbcast was handled in this case.
-  // CHECK: tosa.const_shape  {values = dense<[1, 1, 5, 1]> : tensor<4xindex>} : () -> !tosa.shape<4>
+  // CHECK: tosa.const_shape  values(dense<[1, 1, 5, 1]> : tensor<4xindex>) : () -> !tosa.shape<4>
   func.func @mbcast_non_first_dim(%arg0: !migraphx.shaped<2x3x3x5xf32, 45x15x5x1>, %arg1: !migraphx.shaped<5xf32, 1>) -> !migraphx.shaped<2x3x3x1xf32, 9x3x1x1> attributes {rock.arch = "gfx1100", rock.kernel = "mixr", rock.num_cu = 48 : i64} {
     %0 = migraphx.reshape %arg1 {dims = [5, 1]} : <5xf32, 1> -> <5x1xf32, 1x1>
     %1 = migraphx.multibroadcast %0 {out_dyn_dims = [], out_lens = [2, 3, 5, 1]} : <5x1xf32, 1x1> -> <2x3x5x1xf32, 0x0x1x1>
@@ -366,18 +366,18 @@ module  {
 
   // CHECK-LABEL: func.func @clip_broadcast
   func.func @clip_broadcast(%arg0: !migraphx.shaped<64x64xf16, 64x1>, %arg1: !migraphx.shaped<1x64xf16, 64x1>, %arg2: !migraphx.shaped<1xf16, 0>) -> !migraphx.shaped<64x64xf16, 64x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr"} {
-    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  {values = dense<[1, 64]> : tensor<2xindex>} : () -> !tosa.shape<2>
+    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  values(dense<[1, 64]> : tensor<2xindex>) : () -> !tosa.shape<2>
     // CHECK-DAG: %[[ARG1:.*]] = tosa.reshape %arg1, %[[constshape]]
-    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  {values = dense<64> : tensor<2xindex>} : () -> !tosa.shape<2>
+    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  values(dense<64> : tensor<2xindex>) : () -> !tosa.shape<2>
     // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0, %[[constshape2]]
     // CHECK-DAG: %[[CST1:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<64x64xf16>}> : () -> tensor<64x64xf16>
     // CHECK-DAG: %[[MUL0:.*]] = tosa.mul %[[ARG1]], %[[CST1]], %{{.*}}
-    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  {values = dense<1> : tensor<2xindex>} : () -> !tosa.shape<2>
+    // CHECK-DAG: %[[constshape3:.+]] = tosa.const_shape  values(dense<1> : tensor<2xindex>) : () -> !tosa.shape<2>
     // CHECK-DAG: %[[RESHAPE:.*]] = tosa.reshape %arg2, %[[constshape3]]
     // CHECK-DAG: %[[MUL1:.*]] = tosa.mul %[[RESHAPE]], %[[CST1]], %{{.*}}
     // CHECK: %[[MAX:.*]] = tosa.maximum %[[ARG0]], %[[MUL0]]
     // CHECK: %[[MIN:.*]] = tosa.minimum %[[MAX]], %[[MUL1]]
-    // CHECK-DAG: %[[constshape4:.+]] = tosa.const_shape  {values = dense<4096> : tensor<1xindex>} : () -> !tosa.shape<1>
+    // CHECK-DAG: %[[constshape4:.+]] = tosa.const_shape  values(dense<4096> : tensor<1xindex>) : () -> !tosa.shape<1>
     // CHECK: %[[RET:.*]] = tosa.reshape %[[MIN]], %[[constshape4]]
     // CHECK: return %[[RET]]
     %0 = migraphx.multibroadcast %arg1 {out_dyn_dims = [], out_lens = [64, 64]} : <1x64xf16, 64x1> -> <64x64xf16, 0x1>
@@ -396,9 +396,9 @@ module  {
 
   // CHECK-LABEL: func.func @where_broadcast
   func.func @where_broadcast(%arg0: !migraphx.shaped<64x1xi8, 1x1>, %arg1: !migraphx.shaped<64x64xf16, 64x1>, %arg2: !migraphx.shaped<64x64xf16, 64x1>) -> !migraphx.shaped<64x64xf16, 64x1> attributes {rock.arch = "gfx90a:sramecc+:xnack-", rock.kernel = "mixr"} {
-    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  {values = dense<[64, 1]> : tensor<2xindex>} : () -> !tosa.shape<2>
+    // CHECK-DAG: %[[constshape:.+]] = tosa.const_shape  values(dense<[64, 1]> : tensor<2xindex>) : () -> !tosa.shape<2>
     // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0, %[[constshape]]
-    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  {values = dense<64> : tensor<2xindex>} : () -> !tosa.shape<2>
+    // CHECK-DAG: %[[constshape2:.+]] = tosa.const_shape  values(dense<64> : tensor<2xindex>) : () -> !tosa.shape<2>
     // CHECK-DAG: %[[ARG1:.*]] = tosa.reshape %arg1, %[[constshape2]]
     // CHECK-DAG: %[[ARG2:.*]] = tosa.reshape %arg2, %[[constshape2]]
     // CHECK-DAG: %[[CST1:.*]] = "tosa.const"() <{values = dense<1> : tensor<64x64xi8>}> : () -> tensor<64x64xi8>
@@ -418,7 +418,7 @@ module  {
   // CHECK-DAG: %[[NRECIP:.*]] = tosa.reciprocal %[[N]] : (tensor<1xf32>) -> tensor<1xf32>
   // CHECK-DAG: %[[NRECIPRESHAPED:.*]] = tosa.reshape %[[NRECIP]], %{{.*}} : (tensor<1xf32>, !tosa.shape<4>) -> tensor<1x1x1x1xf32>
   // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG0]], %[[NRECIPRESHAPED]], %{{.*}} : ([[INTYPE]], tensor<1x1x1x1xf32>, tensor<1xi8>) -> [[INTYPE]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -435,7 +435,7 @@ module  {
   // CHECK-DAG: %[[NRECIP:.*]] = tosa.reciprocal %[[N]] : (tensor<1xf16>) -> tensor<1xf16>
   // CHECK-DAG: %[[NRECIPRESHAPED:.*]] = tosa.reshape %[[NRECIP]], %{{.*}} : (tensor<1xf16>, !tosa.shape<4>) -> tensor<1x1x1x1xf16>
   // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG0]], %[[NRECIPRESHAPED]], %{{.*}} : ([[INTYPE]], tensor<1x1x1x1xf16>, tensor<1xi8>) -> [[INTYPE]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -452,7 +452,7 @@ module  {
   // CHECK-DAG: %[[NRECIP:.*]] = tosa.reciprocal %[[N]] : (tensor<1xi32>) -> tensor<1xi32>
   // CHECK-DAG: %[[NRECIPRESHAPED:.*]] = tosa.reshape %[[NRECIP]], %{{.*}} : (tensor<1xi32>, !tosa.shape<4>) -> tensor<1x1x1x1xi32>
   // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG0]], %[[NRECIPRESHAPED]], %{{.*}} : ([[INTYPE]], tensor<1x1x1x1xi32>, tensor<1xi8>) -> [[INTYPE]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -469,7 +469,7 @@ module  {
   // CHECK-DAG: %[[NRECIP:.*]] = tosa.reciprocal %[[N]] : (tensor<1xi16>) -> tensor<1xi16>
   // CHECK-DAG: %[[NRECIPRESHAPED:.*]] = tosa.reshape %[[NRECIP]], %{{.*}} : (tensor<1xi16>, !tosa.shape<4>) -> tensor<1x1x1x1xi16>
   // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG0]], %[[NRECIPRESHAPED]], %{{.*}} : ([[INTYPE]], tensor<1x1x1x1xi16>, tensor<1xi8>) -> [[INTYPE]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -486,7 +486,7 @@ module  {
   // CHECK-DAG: %[[NRECIP:.*]] = tosa.reciprocal %[[N]] : (tensor<1xi8>) -> tensor<1xi8>
   // CHECK-DAG: %[[NRECIPRESHAPED:.*]] = tosa.reshape %[[NRECIP]], %{{.*}} : (tensor<1xi8>, !tosa.shape<4>) -> tensor<1x1x1x1xi8>
   // CHECK-DAG: %[[MUL:.*]] = tosa.mul %[[ARG0]], %[[NRECIPRESHAPED]], %{{.*}} : ([[INTYPE]], tensor<1x1x1x1xi8>, tensor<1xi8>) -> [[INTYPE]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[MUL]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -499,7 +499,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -512,7 +512,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -525,7 +525,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -538,7 +538,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -551,7 +551,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-DAG: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_SUM:.*]] = tosa.reduce_sum %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_SUM]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -565,7 +565,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_MAX]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -578,7 +578,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_MAX]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -591,7 +591,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_MAX]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -604,7 +604,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-SAME: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_MAX]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]
@@ -617,7 +617,7 @@ module  {
   // CHECK-SAME: (%arg0: [[INTYPE_FLAT:.*]]) -> [[OUTTYPE_FLAT:.*]] {
   // CHECK-DAG: %[[ARG0:.*]] = tosa.reshape %arg0
   // CHECK-DAG: ([[INTYPE_FLAT]], !tosa.shape<4>) -> [[INTYPE:.*]]
-  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] {axis = 2 : i32} : ([[INTYPE]]) -> [[OUTTYPE:.*]]
+  // CHECK-DAG: %[[REDUCE_MAX:.*]] = tosa.reduce_max %[[ARG0]] axis(2) : ([[INTYPE]]) -> [[OUTTYPE:.*]]
   // CHECK-DAG: %[[RET:.*]] = tosa.reshape %[[REDUCE_MAX]]
   // CHECK-SAME: ([[OUTTYPE]], !tosa.shape<1>) -> [[OUTTYPE_FLAT]]
   // CHECK: return %[[RET]]

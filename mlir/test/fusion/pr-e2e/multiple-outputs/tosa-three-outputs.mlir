@@ -7,18 +7,18 @@
 module {
   func.func @test_mo(%arg0: tensor<1x256x768xf32>, %arg1: tensor<1x768x768xf32>, %arg2: tensor<1x256x1xf32>, %arg3: tensor<1x256x768xf32>, %arg4: tensor<1x256x768xf32>) -> (tensor<1x256x768xf32>, tensor<1x256x768xf32>, tensor<1x256x768xf32>) attributes {rock.kernel} {
 
-    %const_shape = "tosa.const_shape"() { values = dense<[1, 256, 768]> : tensor<3xindex> } : () -> !tosa.shape<3>
+    %const_shape = "tosa.const_shape"() <{values = dense<[1, 256, 768]> : tensor<3xindex>}> : () -> !tosa.shape<3>
     %0 = "tosa.reshape"(%arg0, %const_shape) : (tensor<1x256x768xf32>, !tosa.shape<3>) -> tensor<1x256x768xf32>
-    %const_shape2 = "tosa.const_shape"() { values = dense<[1, 768, 768]> : tensor<3xindex> } : () -> !tosa.shape<3>
+    %const_shape2 = "tosa.const_shape"() <{values = dense<[1, 768, 768]> : tensor<3xindex>}> : () -> !tosa.shape<3>
     %1 = "tosa.reshape"(%arg1, %const_shape2) : (tensor<1x768x768xf32>, !tosa.shape<3>) -> tensor<1x768x768xf32>
     %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
     %2 = "tosa.matmul"(%0, %1, %a_zp, %b_zp) {acc_type = f32} : (tensor<1x256x768xf32>, tensor<1x768x768xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x256x768xf32>
-    %const_shape3 = "tosa.const_shape"() { values = dense<[1, 256, 768]> : tensor<3xindex> } : () -> !tosa.shape<3>
+    %const_shape3 = "tosa.const_shape"() <{values = dense<[1, 256, 768]> : tensor<3xindex>}> : () -> !tosa.shape<3>
     %3 = "tosa.reshape"(%2, %const_shape3) : (tensor<1x256x768xf32>, !tosa.shape<3>) -> tensor<1x256x768xf32>
     %4 = "tosa.add"(%3, %arg2) : (tensor<1x256x768xf32>, tensor<1x256x1xf32>) -> tensor<1x256x768xf32>
     %5 = "tosa.add"(%4, %arg3) : (tensor<1x256x768xf32>, tensor<1x256x768xf32>) -> tensor<1x256x768xf32>
-    %6 = "tosa.clamp"(%5) {max_val = 3.40282347E+38 : f32, min_val = 0.000000e+00 : f32} : (tensor<1x256x768xf32>) -> tensor<1x256x768xf32>
+    %6 = "tosa.clamp"(%5) <{min_val = 0.000000e+00 : f32, max_val = 3.40282347E+38 : f32}> : (tensor<1x256x768xf32>) -> tensor<1x256x768xf32>
     %7 = "tosa.sub"(%6, %arg4) : (tensor<1x256x768xf32>, tensor<1x256x768xf32>) -> tensor<1x256x768xf32>
     return %5, %6, %7 : tensor<1x256x768xf32>, tensor<1x256x768xf32>, tensor<1x256x768xf32>
   }

@@ -11,7 +11,7 @@ func.func @test_matmul_t_block_scaled_basic(%a_data: tensor<1x128x256xf4E2M1FN>,
                                              %b_data: tensor<1x512x256xf4E2M1FN>, 
                                              %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                              -> tensor<1x128x512xf32> attributes {rock.kernel} {
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x128x512xf32>
   return %result : tensor<1x128x512xf32>
@@ -24,7 +24,7 @@ func.func @test_matmul_t_block_scaled_batched(%a_data: tensor<4x128x256xf4E2M1FN
                                                %b_data: tensor<4x512x256xf4E2M1FN>, 
                                                %b_scale: tensor<4x512x8xf8E8M0FNU>) 
                                                -> tensor<4x128x512xf32> attributes {rock.kernel} {
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<4x128x256xf4E2M1FN>, tensor<4x128x8xf8E8M0FNU>, tensor<4x512x256xf4E2M1FN>, tensor<4x512x8xf8E8M0FNU>) 
       -> tensor<4x128x512xf32>
   return %result : tensor<4x128x512xf32>
@@ -37,7 +37,7 @@ func.func @test_matmul_t_block_scaled_large_k(%a_data: tensor<1x64x512xf4E2M1FN>
                                                %b_data: tensor<1x256x512xf4E2M1FN>, 
                                                %b_scale: tensor<1x256x16xf8E8M0FNU>) 
                                                -> tensor<1x64x256xf32> attributes {rock.kernel} {
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x64x512xf4E2M1FN>, tensor<1x64x16xf8E8M0FNU>, tensor<1x256x512xf4E2M1FN>, tensor<1x256x16xf8E8M0FNU>) 
       -> tensor<1x64x256xf32>
   return %result : tensor<1x64x256xf32>
@@ -51,8 +51,8 @@ func.func @test_matmul_t_block_scaled_transpose_a(%a_data: tensor<1x256x256xf4E2
                                                    %b_data: tensor<1x512x256xf4E2M1FN>, 
                                                    %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                                    -> tensor<1x256x512xf32> attributes {rock.kernel} {
-  %a_tr = "tosa.transpose"(%a_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %a_tr = "tosa.transpose"(%a_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x256x512xf32>
   return %result : tensor<1x256x512xf32>
@@ -66,8 +66,8 @@ func.func @test_matmul_t_block_scaled_transpose_b(%a_data: tensor<1x128x256xf4E2
                                                    %b_data: tensor<1x256x256xf4E2M1FN>, 
                                                    %b_scale: tensor<1x256x8xf8E8M0FNU>) 
                                                    -> tensor<1x128x256xf32> attributes {rock.kernel} {
-  %b_tr = "tosa.transpose"(%b_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %b_tr = "tosa.transpose"(%b_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>) 
       -> tensor<1x128x256xf32>
   return %result : tensor<1x128x256xf32>
@@ -81,8 +81,8 @@ func.func @test_matmul_t_block_scaled_transpose_a_scale(%a_data: tensor<1x8x256x
                                                          %b_data: tensor<1x512x256xf4E2M1FN>, 
                                                          %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                                          -> tensor<1x8x512xf32> attributes {rock.kernel} {
-  %a_scale_tr = "tosa.transpose"(%a_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale_tr, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %a_scale_tr = "tosa.transpose"(%a_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale_tr, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x8x256xf4E2M1FN>, tensor<1x8x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x8x512xf32>
   return %result : tensor<1x8x512xf32>
@@ -96,8 +96,8 @@ func.func @test_matmul_t_block_scaled_transpose_b_scale(%a_data: tensor<1x128x25
                                                          %b_data: tensor<1x8x256xf4E2M1FN>, 
                                                          %b_scale: tensor<1x8x8xf8E8M0FNU>) 
                                                          -> tensor<1x128x8xf32> attributes {rock.kernel} {
-  %b_scale_tr = "tosa.transpose"(%b_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale_tr {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %b_scale_tr = "tosa.transpose"(%b_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale_tr block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x8x256xf4E2M1FN>, tensor<1x8x8xf8E8M0FNU>) 
       -> tensor<1x128x8xf32>
   return %result : tensor<1x128x8xf32>
@@ -111,9 +111,9 @@ func.func @test_matmul_t_block_scaled_transpose_both_scales(%a_data: tensor<1x8x
                                                              %b_data: tensor<1x8x256xf4E2M1FN>, 
                                                              %b_scale: tensor<1x8x8xf8E8M0FNU>) 
                                                              -> tensor<1x8x8xf32> attributes {rock.kernel} {
-  %a_scale_tr = "tosa.transpose"(%a_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
-  %b_scale_tr = "tosa.transpose"(%b_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale_tr, %b_data, %b_scale_tr {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %a_scale_tr = "tosa.transpose"(%a_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
+  %b_scale_tr = "tosa.transpose"(%b_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x8xf8E8M0FNU>) -> tensor<1x8x8xf8E8M0FNU>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale_tr, %b_data, %b_scale_tr block_size<BLOCK_SIZE_32> 
       : (tensor<1x8x256xf4E2M1FN>, tensor<1x8x8xf8E8M0FNU>, tensor<1x8x256xf4E2M1FN>, tensor<1x8x8xf8E8M0FNU>) 
       -> tensor<1x8x8xf32>
   return %result : tensor<1x8x8xf32>
@@ -127,9 +127,9 @@ func.func @test_matmul_t_block_scaled_transpose_a_data_and_scale(%a_data: tensor
                                                                   %b_data: tensor<1x512x256xf4E2M1FN>, 
                                                                   %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                                                   -> tensor<1x256x512xf32> attributes {rock.kernel} {
-  %a_tr = "tosa.transpose"(%a_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %a_scale_tr = "tosa.transpose"(%a_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x256xf8E8M0FNU>) -> tensor<1x256x8xf8E8M0FNU>
-  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale_tr, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %a_tr = "tosa.transpose"(%a_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %a_scale_tr = "tosa.transpose"(%a_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x256xf8E8M0FNU>) -> tensor<1x256x8xf8E8M0FNU>
+  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale_tr, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x256x512xf32>
   return %result : tensor<1x256x512xf32>
@@ -143,9 +143,9 @@ func.func @test_matmul_t_block_scaled_transpose_b_data_and_scale(%a_data: tensor
                                                                   %b_data: tensor<1x256x256xf4E2M1FN>, 
                                                                   %b_scale: tensor<1x8x256xf8E8M0FNU>) 
                                                                   -> tensor<1x128x256xf32> attributes {rock.kernel} {
-  %b_tr = "tosa.transpose"(%b_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %b_scale_tr = "tosa.transpose"(%b_scale) {perms = array<i32: 0, 2, 1>} : (tensor<1x8x256xf8E8M0FNU>) -> tensor<1x256x8xf8E8M0FNU>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale_tr {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %b_tr = "tosa.transpose"(%b_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %b_scale_tr = "tosa.transpose"(%b_scale) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x8x256xf8E8M0FNU>) -> tensor<1x256x8xf8E8M0FNU>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale_tr block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>) 
       -> tensor<1x128x256xf32>
   return %result : tensor<1x128x256xf32>
@@ -159,10 +159,10 @@ func.func @test_matmul_t_block_scaled_transpose_c(%a_data: tensor<1x128x256xf4E2
                                                     %b_data: tensor<1x512x256xf4E2M1FN>, 
                                                     %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                                     -> tensor<1x512x128xf32> attributes {rock.kernel} {
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x128x512xf32>
-  %result_tr = "tosa.transpose"(%result) {perms = array<i32: 0, 2, 1>} : (tensor<1x128x512xf32>) -> tensor<1x512x128xf32>
+  %result_tr = "tosa.transpose"(%result) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x128x512xf32>) -> tensor<1x512x128xf32>
   return %result_tr : tensor<1x512x128xf32>
 }
 
@@ -174,11 +174,11 @@ func.func @test_matmul_t_block_scaled_transpose_a_and_c(%a_data: tensor<1x256x25
                                                           %b_data: tensor<1x512x256xf4E2M1FN>, 
                                                           %b_scale: tensor<1x512x8xf8E8M0FNU>) 
                                                           -> tensor<1x512x256xf32> attributes {rock.kernel} {
-  %a_tr = "tosa.transpose"(%a_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale, %b_data, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %a_tr = "tosa.transpose"(%a_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %result = tosa.matmul_t_block_scaled %a_tr, %a_scale, %b_data, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>, tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>) 
       -> tensor<1x256x512xf32>
-  %result_tr = "tosa.transpose"(%result) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x512xf32>) -> tensor<1x512x256xf32>
+  %result_tr = "tosa.transpose"(%result) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x512xf32>) -> tensor<1x512x256xf32>
   return %result_tr : tensor<1x512x256xf32>
 }
 
@@ -190,11 +190,11 @@ func.func @test_matmul_t_block_scaled_transpose_b_and_c(%a_data: tensor<1x128x25
                                                           %b_data: tensor<1x256x256xf4E2M1FN>, 
                                                           %b_scale: tensor<1x256x8xf8E8M0FNU>) 
                                                           -> tensor<1x256x128xf32> attributes {rock.kernel} {
-  %b_tr = "tosa.transpose"(%b_data) {perms = array<i32: 0, 2, 1>} : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
-  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale {block_size = #tosa.block_size<BLOCK_SIZE_32>} 
+  %b_tr = "tosa.transpose"(%b_data) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x256x256xf4E2M1FN>) -> tensor<1x256x256xf4E2M1FN>
+  %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_tr, %b_scale block_size<BLOCK_SIZE_32> 
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>, tensor<1x256x256xf4E2M1FN>, tensor<1x256x8xf8E8M0FNU>) 
       -> tensor<1x128x256xf32>
-  %result_tr = "tosa.transpose"(%result) {perms = array<i32: 0, 2, 1>} : (tensor<1x128x256xf32>) -> tensor<1x256x128xf32>
+  %result_tr = "tosa.transpose"(%result) <{perms = array<i32: 0, 2, 1>}> : (tensor<1x128x256xf32>) -> tensor<1x256x128xf32>
   return %result_tr : tensor<1x256x128xf32>
 }
 }

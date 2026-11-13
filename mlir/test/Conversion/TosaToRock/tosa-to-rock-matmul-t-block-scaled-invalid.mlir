@@ -15,7 +15,7 @@ func.func @k_not_multiple_of_block_size_via_transpose_b(
   // expected-error @+2 {{'tosa.matmul_t_block_scaled' op K dimension (100) must be a multiple of block_size (32)}}
   // expected-error @+1 {{failed to legalize operation 'tosa.matmul_t_block_scaled' that was explicitly marked illegal}}
   %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale
-      {block_size = #tosa.block_size<BLOCK_SIZE_32>, transpose_b = true}
+      block_size<BLOCK_SIZE_32> {transpose_b = true}
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>,
          tensor<1x100x256xf4E2M1FN>, tensor<1x100x8xf8E8M0FNU>)
       -> tensor<1x128x100xf32>
@@ -38,7 +38,7 @@ func.func @a_scale_k_mismatch_via_transpose_a_scale(
   // expected-error @+2 {{'tosa.matmul_t_block_scaled' op A scale K dimension (128) does not match K / block_size (8)}}
   // expected-error @+1 {{failed to legalize operation 'tosa.matmul_t_block_scaled' that was explicitly marked illegal}}
   %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale
-      {block_size = #tosa.block_size<BLOCK_SIZE_32>, transpose_a_scale = true}
+      block_size<BLOCK_SIZE_32> {transpose_a_scale = true}
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>,
          tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>)
       -> tensor<1x128x512xf32>
@@ -61,7 +61,7 @@ func.func @b_scale_k_mismatch_via_transpose_b_scale(
   // expected-error @+2 {{'tosa.matmul_t_block_scaled' op B scale K dimension (512) does not match K / block_size (8)}}
   // expected-error @+1 {{failed to legalize operation 'tosa.matmul_t_block_scaled' that was explicitly marked illegal}}
   %result = tosa.matmul_t_block_scaled %a_data, %a_scale, %b_data, %b_scale
-      {block_size = #tosa.block_size<BLOCK_SIZE_32>, transpose_b_scale = true}
+      block_size<BLOCK_SIZE_32> {transpose_b_scale = true}
       : (tensor<1x128x256xf4E2M1FN>, tensor<1x128x8xf8E8M0FNU>,
          tensor<1x512x256xf4E2M1FN>, tensor<1x512x8xf8E8M0FNU>)
       -> tensor<1x128x512xf32>

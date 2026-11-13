@@ -50,7 +50,7 @@ func.func private @gemm_reduce_fut(%arg0: tensor<1x256x64xf32>, %arg1: tensor<1x
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %b_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
   %0 = tosa.matmul %arg0, %arg1, %a_zp, %b_zp {acc_type = f32} : (tensor<1x256x64xf32>, tensor<1x64x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x256x128xf32>
-  %1 = tosa.reduce_sum %0 {axis = 2 : i32} : (tensor<1x256x128xf32>) -> tensor<1x256x1xf32>
+  %1 = tosa.reduce_sum %0 axis(2) : (tensor<1x256x128xf32>) -> tensor<1x256x1xf32>
   return %1 : tensor<1x256x1xf32>
 }
 

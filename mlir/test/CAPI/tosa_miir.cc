@@ -202,8 +202,8 @@ MlirModule makeAndDumpMIXR(MlirContext ctx, MlirLocation location) {
   //   tensor<64x64x1x1xf32>, %arg2: tensor<1x64x1x1xf32>) ->
   //   tensor<1x64x56x56xf32> attributes {rock.kernel, rock.arch =
   //   "amdgcn-amd-amdhsa:gfx908"} {
-  //     %0 = "tosa.conv2d"(%arg0, %arg1, %arg2) {dilation = [1, 1], pad = [0,
-  //     0, 0, 0], stride = [1, 1]} : (tensor<1x64x56x56xf32>,
+  //     %0 = "tosa.conv2d"(%arg0, %arg1, %arg2) <{pad = [0,
+  //     0, 0, 0], stride = [1, 1], dilation = [1, 1]}> : (tensor<1x64x56x56xf32>,
   //     tensor<64x64x1x1xf32>, tensor<1x64x1x1xf32>) -> tensor<1x64x56x56xf32>
   //     %1 = "tosa.clamp"(%0) {max_fp = 1.000000e+00 : f32, max_int = 1 : i64,
   //     min_fp = -1.000000e+00 : f32, min_int = -1 : i64} :

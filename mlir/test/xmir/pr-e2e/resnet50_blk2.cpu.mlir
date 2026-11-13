@@ -20,19 +20,19 @@ module {
     // Block 0
     %input_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
     %weight_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
-    %0 = "tosa.conv2d"(%arg0, %arg1, %cst, %input_zp, %weight_zp) {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
-    %1 = "tosa.clamp"(%0) {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
+    %0 = "tosa.conv2d"(%arg0, %arg1, %cst, %input_zp, %weight_zp) <{pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>, dilation = array<i64: 1, 1>, acc_type = f32}> : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
+    %1 = "tosa.clamp"(%0) <{min_val = 0.0 : f32, max_val = 6.0 : f32}> : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
 
-    %2 = "tosa.conv2d"(%1, %arg2, %cst, %input_zp, %weight_zp) {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
-    %3 = "tosa.clamp"(%2) {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
+    %2 = "tosa.conv2d"(%1, %arg2, %cst, %input_zp, %weight_zp) <{pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>, dilation = array<i64: 1, 1>, acc_type = f32}> : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
+    %3 = "tosa.clamp"(%2) <{min_val = 0.0 : f32, max_val = 6.0 : f32}> : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
     %4 = "tosa.add"(%arg0, %3) : (tensor<1x32x32x64xf32>, tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
 
     // Block 1
-    %5 = "tosa.conv2d"(%4, %arg3, %cst, %input_zp, %weight_zp) {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
-    %6 = "tosa.clamp"(%5) {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
+    %5 = "tosa.conv2d"(%4, %arg3, %cst, %input_zp, %weight_zp) <{pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>, dilation = array<i64: 1, 1>, acc_type = f32}> : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
+    %6 = "tosa.clamp"(%5) <{min_val = 0.0 : f32, max_val = 6.0 : f32}> : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
 
-    %7 = "tosa.conv2d"(%6, %arg4, %cst, %input_zp, %weight_zp) {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
-    %8 = "tosa.clamp"(%7) {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
+    %7 = "tosa.conv2d"(%6, %arg4, %cst, %input_zp, %weight_zp) <{pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>, dilation = array<i64: 1, 1>, acc_type = f32}> : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
+    %8 = "tosa.clamp"(%7) <{min_val = 0.0 : f32, max_val = 6.0 : f32}> : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
     %9 = "tosa.add"(%arg0, %8) : (tensor<1x32x32x64xf32>, tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
 
     return %9 : tensor<1x32x32x64xf32>

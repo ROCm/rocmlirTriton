@@ -44,6 +44,6 @@ func.func @cast_f8e8m0fnu_to_i32_rejected(%arg0: tensor<16xf8E8M0FNU>) -> tensor
 // CHECK: rock::createClampedFPToInt: source float type lacks a representable zero, signed representation, or infinity
 func.func @fp_to_int_cast_unsigned_float_rejected(%arg0: tensor<16xf8E8M0FNU>) -> tensor<16xi32>
     attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf8E8M0FNU>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf8E8M0FNU>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }

@@ -15,7 +15,7 @@
 // CHECK-NEXT: -> tensor<8x8x2xi8>
 // CHECK-NEXT: return %[[ret]]
 func.func @integers_i4_to_i8(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xi8> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xi4>) -> tensor<8x8x2xi8>
+  %out = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xi4>) -> tensor<8x8x2xi8>
   func.return %out : tensor<8x8x2xi8>
 }
 
@@ -31,7 +31,7 @@ func.func @integers_i4_to_i8(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xi8> {
 // CHECK-NEXT: -> tensor<8x8x2xi4>
 // CHECK-NEXT: return %[[ret]]
 func.func @integers_i8_to_i4(%arg0: tensor<8x8x2xi8>) -> tensor<8x8x2xi4> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xi8>) -> tensor<8x8x2xi4>
+  %out = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xi8>) -> tensor<8x8x2xi4>
   func.return %out : tensor<8x8x2xi4>
 }
 
@@ -49,7 +49,7 @@ func.func @integers_i8_to_i4(%arg0: tensor<8x8x2xi8>) -> tensor<8x8x2xi4> {
 // CHECK-NEXT: -> tensor<8x8x2xf16>
 // CHECK-NEXT: return %[[ret]]
 func.func @floats_i4_to_f16(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf16> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xi4>) -> tensor<8x8x2xf16>
+  %out = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xi4>) -> tensor<8x8x2xf16>
   func.return %out : tensor<8x8x2xf16>
 }
 
@@ -65,7 +65,7 @@ func.func @floats_i4_to_f16(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf16> {
 // CHECK-NEXT: -> tensor<8x8x2xf32>
 // CHECK-NEXT: return %[[ret]]
 func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xi4>) -> tensor<8x8x2xf32>
+  %out = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xi4>) -> tensor<8x8x2xf32>
   func.return %out : tensor<8x8x2xf32>
 }
 
@@ -94,7 +94,7 @@ func.func @floats_i4_to_f32(%arg0: tensor<8x8x2xi4>) -> tensor<8x8x2xf32> {
 // CHECK:      -> tensor<8x8x2xi8>
 // CHECK:      return %[[ret]]
 func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<8x8x2xf16>) -> tensor<8x8x2xi8>
+  %out = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xf16>) -> tensor<8x8x2xi8>
   func.return %out : tensor<8x8x2xi8>
 }
 
@@ -126,7 +126,7 @@ func.func @floats_f16_to_i8(%arg0: tensor<8x8x2xf16>) -> tensor<8x8x2xi8> {
 // CHECK:      -> tensor<8x8x2xi32>
 // CHECK:      return %[[ret]]
 func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi32> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<8x8x2xf32>) -> tensor<8x8x2xi32>
+  %out = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<8x8x2xf32>) -> tensor<8x8x2xi32>
   func.return %out : tensor<8x8x2xi32>
 }
 
@@ -149,7 +149,7 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<8x8x2xf32>) -> tensor<8x8x2xi
 // CHECK:      -> tensor<16xi8>
 // CHECK:      return %[[ret]]
 func.func @fp_to_int_cast_f16_to_i8(%arg0: tensor<16xf16>) -> tensor<16xi8> {
-  %out = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf16>) -> tensor<16xi8>
+  %out = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf16>) -> tensor<16xi8>
   func.return %out : tensor<16xi8>
 }
 
@@ -232,7 +232,7 @@ func.func @matmul_acc_promotion_preserves_attrs(%arg0: tensor<1x4x8xf16>, %arg1:
 // CHECK-NEXT: -> tensor<1x36x384x64xi32>
 // CHECK-NEXT: return %[[ret]]
 func.func @unsigned_div(%arg0: tensor<1x36x384x64xi32>, %arg1: tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi32> {
-  %out = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_div"} : (tensor<1x36x384x64xi32>, tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi32>
+  %out = tosa.custom %arg0, %arg1 operator_name("unsigned_div") domain_name("rocmlir") implementation_attrs("") : (tensor<1x36x384x64xi32>, tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi32>
   func.return %out : tensor<1x36x384x64xi32>
 }
 
@@ -250,6 +250,6 @@ func.func @unsigned_div(%arg0: tensor<1x36x384x64xi32>, %arg1: tensor<1x36x384x6
 // CHECK-NEXT: -> tensor<4xi32>
 // CHECK-NEXT: return %[[ret]]
 func.func @unsigned_max(%arg0: tensor<4xi32>, %arg1: tensor<4xi32>) -> tensor<4xi32> {
-  %out = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_max"} : (tensor<4xi32>, tensor<4xi32>) -> tensor<4xi32>
+  %out = tosa.custom %arg0, %arg1 operator_name("unsigned_max") domain_name("rocmlir") implementation_attrs("") : (tensor<4xi32>, tensor<4xi32>) -> tensor<4xi32>
   func.return %out : tensor<4xi32>
 }

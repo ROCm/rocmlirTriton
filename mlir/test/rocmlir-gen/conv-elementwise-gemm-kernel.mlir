@@ -22,7 +22,7 @@
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_conv_gemm
-// CHECK: %[[convTensor:.*]] = tosa.conv2d %[[inputTensor:.*]], %[[filterTensor:.*]], %{{.*}}, %{{.*}}, %{{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 1, 1>} : (tensor<2x32x32x256xf32>, tensor<128x1x1x256xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x128xf32>
+// CHECK: %[[convTensor:.*]] = tosa.conv2d %[[inputTensor:.*]], %[[filterTensor:.*]], %{{.*}}, %{{.*}}, %{{.*}} pad([0, 0, 0, 0]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<2x32x32x256xf32>, tensor<128x1x1x256xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x128xf32>
 // CHECK-DAG: %[[abTensor:.*]] = tosa.reshape %[[convTensor]], %{{.*}} : (tensor<2x32x32x128xf32>, !tosa.shape<3>) -> tensor<1x2048x128xf32>
 // CHECK-DAG: %[[resultTensor:.*]] = tosa.matmul %[[abTensor]], %[[cTensor:.*]], %{{.*}}, %{{.*}} {acc_type = f32} : (tensor<1x2048x128xf32>, tensor<1x128x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2048x128xf32>
 // CHECK: return
@@ -35,7 +35,7 @@
 
 // PADTRIM-LABEL: func.func @host_naive_conv_gemm
 // PADTRIM-NOT: tosa.slice
-// PADTRIM: tosa.conv2d {{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 0, 1, 0>, stride = array<i64: 2, 2>}
+// PADTRIM: tosa.conv2d {{.*}} pad([1, 0, 1, 0]) stride([2, 2]) dilation([1, 1]) acc_type(f32)
 // PADTRIM: tosa.matmul
 // PADTRIM: return
 
@@ -46,7 +46,7 @@
 
 // SLICE-LABEL: func.func @host_naive_conv_gemm
 // SLICE: tosa.slice %{{.*}}, %{{.*}}, %{{.*}} : (tensor<2x8x8x8xf16>, !tosa.shape<4>, !tosa.shape<4>) -> tensor<2x7x7x8xf16>
-// SLICE: tosa.conv2d {{.*}} {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 0, 0, 0, 0>, stride = array<i64: 2, 2>}
+// SLICE: tosa.conv2d {{.*}} pad([0, 0, 0, 0]) stride([2, 2]) dilation([1, 1]) acc_type(f32)
 // SLICE: tosa.matmul
 // SLICE: return
 

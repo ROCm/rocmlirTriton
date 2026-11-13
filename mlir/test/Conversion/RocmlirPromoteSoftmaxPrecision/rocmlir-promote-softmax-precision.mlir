@@ -20,14 +20,14 @@
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[CAST_EXP]], %[[RECIP]], %[[SHIFT]] : (tensor<1x384xf32>, tensor<1x1xf32>, tensor<1xi8>) -> tensor<1x384xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[MUL]] : (tensor<1x384xf32>) -> tensor<1x384xf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @softmax_norm_f16(%arg0: tensor<1x384xf16>) -> tensor<1x384xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %2 = tosa.reciprocal %1 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %3 = tosa.mul %0, %2, %shift : (tensor<1x384xf16>, tensor<1x1xf16>, tensor<1xi8>) -> tensor<1x384xf16>
@@ -42,14 +42,14 @@ func.func @softmax_norm_f16(%arg0: tensor<1x384xf16>) -> tensor<1x384xf16> {
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xbf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[CAST_EXP]], %[[RECIP]], %[[SHIFT]] : (tensor<1x384xf32>, tensor<1x1xf32>, tensor<1xi8>) -> tensor<1x384xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[MUL]] : (tensor<1x384xf32>) -> tensor<1x384xbf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @softmax_norm_bf16(%arg0: tensor<1x384xbf16>) -> tensor<1x384xbf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xbf16>) -> tensor<1x384xbf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xbf16>) -> tensor<1x1xbf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xbf16>) -> tensor<1x1xbf16>
   %2 = tosa.reciprocal %1 : (tensor<1x1xbf16>) -> tensor<1x1xbf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %3 = tosa.mul %0, %2, %shift : (tensor<1x384xbf16>, tensor<1x1xbf16>, tensor<1xi8>) -> tensor<1x384xbf16>
@@ -63,14 +63,14 @@ func.func @softmax_norm_bf16(%arg0: tensor<1x384xbf16>) -> tensor<1x384xbf16> {
 // CHECK-LABEL: @softmax_norm_f32_noop
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK: %[[EXP:.+]] = tosa.exp
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[EXP]], %[[RECIP]], %[[SHIFT]] : (tensor<1x384xf32>, tensor<1x1xf32>, tensor<1xi8>) -> tensor<1x384xf32>
 // CHECK-NOT: tosa.cast
 // CHECK: return %[[MUL]]
 func.func @softmax_norm_f32_noop(%arg0: tensor<1x384xf32>) -> tensor<1x384xf32> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf32>) -> tensor<1x384xf32>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
   %2 = tosa.reciprocal %1 : (tensor<1x1xf32>) -> tensor<1x1xf32>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %3 = tosa.mul %0, %2, %shift : (tensor<1x384xf32>, tensor<1x1xf32>, tensor<1xi8>) -> tensor<1x384xf32>
@@ -87,14 +87,14 @@ func.func @softmax_norm_f32_noop(%arg0: tensor<1x384xf32>) -> tensor<1x384xf32> 
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[CAST_EXP]], %[[RECIP]], %[[SHIFT]] : (tensor<1x384xf32>, tensor<1x1xf32>, tensor<1xi8>) -> tensor<1x384xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[MUL]] : (tensor<1x384xf32>) -> tensor<1x384xf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @softmax_norm_reversed_operands(%arg0: tensor<1x384xf16>) -> tensor<1x384xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %2 = tosa.reciprocal %1 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %3 = tosa.mul %2, %0, %shift : (tensor<1x1xf16>, tensor<1x384xf16>, tensor<1xi8>) -> tensor<1x384xf16>
@@ -114,7 +114,7 @@ func.func @softmax_norm_reversed_operands(%arg0: tensor<1x384xf16>) -> tensor<1x
 // CHECK-DAG: %[[EXP0:.+]] = tosa.exp %arg0
 // CHECK-DAG: %[[EXP1:.+]] = tosa.exp %arg1
 // CHECK: %[[CAST_EXP1:.+]] = tosa.cast %[[EXP1]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM_F32:.+]] = tosa.reduce_sum %[[CAST_EXP1]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM_F32:.+]] = tosa.reduce_sum %[[CAST_EXP1]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[SUM_F32]] : (tensor<1x1xf32>) -> tensor<1x1xf16>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[CAST_BACK]] : (tensor<1x1xf16>) -> tensor<1x1xf16>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[EXP0]], %[[RECIP]], %[[SHIFT]] : (tensor<1x384xf16>, tensor<1x1xf16>, tensor<1xi8>) -> tensor<1x384xf16>
@@ -122,7 +122,7 @@ func.func @softmax_norm_reversed_operands(%arg0: tensor<1x384xf16>) -> tensor<1x
 func.func @reduce_sum_no_softmax_match(%arg0: tensor<1x384xf16>, %arg1: tensor<1x384xf16>) -> tensor<1x384xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
   %1 = tosa.exp %arg1 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %2 = tosa.reduce_sum %1 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %2 = tosa.reduce_sum %1 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %3 = tosa.reciprocal %2 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %4 = tosa.mul %0, %3, %shift : (tensor<1x384xf16>, tensor<1x1xf16>, tensor<1xi8>) -> tensor<1x384xf16>
@@ -171,14 +171,14 @@ func.func @plain_mul_no_softmax(%arg0: tensor<1x384xf16>, %arg1: tensor<1x384xf1
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x36x384xf16>) -> tensor<1x36x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 2 : i32} : (tensor<1x36x384xf32>) -> tensor<1x36x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(2) : (tensor<1x36x384xf32>) -> tensor<1x36x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x36x1xf32>) -> tensor<1x36x1xf32>
 // CHECK: %[[MUL:.+]] = tosa.mul %[[CAST_EXP]], %[[RECIP]], %[[SHIFT]] : (tensor<1x36x384xf32>, tensor<1x36x1xf32>, tensor<1xi8>) -> tensor<1x36x384xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[MUL]] : (tensor<1x36x384xf32>) -> tensor<1x36x384xf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @softmax_norm_3d_attention(%arg0: tensor<1x36x384xf16>) -> tensor<1x36x384xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x36x384xf16>) -> tensor<1x36x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 2 : i32} : (tensor<1x36x384xf16>) -> tensor<1x36x1xf16>
+  %1 = tosa.reduce_sum %0 axis(2) : (tensor<1x36x384xf16>) -> tensor<1x36x1xf16>
   %2 = tosa.reciprocal %1 : (tensor<1x36x1xf16>) -> tensor<1x36x1xf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %3 = tosa.mul %0, %2, %shift : (tensor<1x36x384xf16>, tensor<1x36x1xf16>, tensor<1xi8>) -> tensor<1x36x384xf16>
@@ -196,7 +196,7 @@ func.func @softmax_norm_3d_attention(%arg0: tensor<1x36x384xf16>) -> tensor<1x36
 // CHECK-LABEL: @lse_log_plus_max_f16
 // CHECK: %[[EXP:.+]] = tosa.exp %arg0
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK-DAG: %[[LOG:.+]] = tosa.log %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK-DAG: %[[CAST_MAX:.+]] = tosa.cast %arg1 : (tensor<1x1xf16>) -> tensor<1x1xf32>
 // CHECK: %[[ADD:.+]] = tosa.add %[[CAST_MAX]], %[[LOG]] : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
@@ -204,7 +204,7 @@ func.func @softmax_norm_3d_attention(%arg0: tensor<1x36x384xf16>) -> tensor<1x36
 // CHECK: return %[[CAST_BACK]]
 func.func @lse_log_plus_max_f16(%arg0: tensor<1x384xf16>, %arg1: tensor<1x1xf16>) -> tensor<1x1xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %2 = tosa.log %1 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   %3 = tosa.add %arg1, %2 : (tensor<1x1xf16>, tensor<1x1xf16>) -> tensor<1x1xf16>
   func.return %3 : tensor<1x1xf16>
@@ -217,7 +217,7 @@ func.func @lse_log_plus_max_f16(%arg0: tensor<1x384xf16>, %arg1: tensor<1x1xf16>
 // CHECK-LABEL: @lse_log_plus_max_bf16
 // CHECK: %[[EXP:.+]] = tosa.exp %arg0
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xbf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[LOG:.+]] = tosa.log %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: tosa.add
 // CHECK-SAME: tensor<1x1xf32>
@@ -225,7 +225,7 @@ func.func @lse_log_plus_max_f16(%arg0: tensor<1x384xf16>, %arg1: tensor<1x1xf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @lse_log_plus_max_bf16(%arg0: tensor<1x384xbf16>, %arg1: tensor<1x1xbf16>) -> tensor<1x1xbf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xbf16>) -> tensor<1x384xbf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xbf16>) -> tensor<1x1xbf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xbf16>) -> tensor<1x1xbf16>
   %2 = tosa.log %1 : (tensor<1x1xbf16>) -> tensor<1x1xbf16>
   %3 = tosa.add %arg1, %2 : (tensor<1x1xbf16>, tensor<1x1xbf16>) -> tensor<1x1xbf16>
   func.return %3 : tensor<1x1xbf16>
@@ -240,13 +240,13 @@ func.func @lse_log_plus_max_bf16(%arg0: tensor<1x384xbf16>, %arg1: tensor<1x1xbf
 // CHECK-LABEL: @lse_log_only_f16
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[LOG:.+]] = tosa.log %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[LOG]] : (tensor<1x1xf32>) -> tensor<1x1xf16>
 // CHECK: return %[[CAST_BACK]]
 func.func @lse_log_only_f16(%arg0: tensor<1x384xf16>) -> tensor<1x1xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %2 = tosa.log %1 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   func.return %2 : tensor<1x1xf16>
 }
@@ -257,14 +257,14 @@ func.func @lse_log_only_f16(%arg0: tensor<1x384xf16>) -> tensor<1x1xf16> {
 
 // CHECK-LABEL: @lse_log_plus_max_f32_noop
 // CHECK: %[[EXP:.+]] = tosa.exp
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[LOG:.+]] = tosa.log %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
 // CHECK: %[[ADD:.+]] = tosa.add %arg1, %[[LOG]]
 // CHECK-NOT: tosa.cast
 // CHECK: return %[[ADD]]
 func.func @lse_log_plus_max_f32_noop(%arg0: tensor<1x384xf32>, %arg1: tensor<1x1xf32>) -> tensor<1x1xf32> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf32>) -> tensor<1x384xf32>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
   %2 = tosa.log %1 : (tensor<1x1xf32>) -> tensor<1x1xf32>
   %3 = tosa.add %arg1, %2 : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
   func.return %3 : tensor<1x1xf32>
@@ -281,7 +281,7 @@ func.func @lse_log_plus_max_f32_noop(%arg0: tensor<1x384xf32>, %arg1: tensor<1x1
 // CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
 // CHECK-DAG: %[[EXP:.+]] = tosa.exp %arg0
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // We expect exactly one f32 reduce_sum -- no leftover f16 reduce_sum.
 // CHECK-NOT: tosa.reduce_sum {{.*}} -> tensor<1x1xf16>
 // Softmax tail in f32:
@@ -296,7 +296,7 @@ func.func @lse_log_plus_max_f32_noop(%arg0: tensor<1x384xf32>, %arg1: tensor<1x1
 // CHECK: return %[[CAST_SOFTMAX]], %[[CAST_LSE]]
 func.func @softmax_and_lse_shared_reduce_sum(%arg0: tensor<1x384xf16>, %arg1: tensor<1x1xf16>) -> (tensor<1x384xf16>, tensor<1x1xf16>) {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   // Softmax tail.
   %2 = tosa.reciprocal %1 : (tensor<1x1xf16>) -> tensor<1x1xf16>
   %shift = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
@@ -314,10 +314,10 @@ func.func @softmax_and_lse_shared_reduce_sum(%arg0: tensor<1x384xf16>, %arg1: te
 
 // CHECK-LABEL: @reduce_sum_not_from_exp
 // CHECK-NOT: -> tensor<{{.*}}xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %arg0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %arg0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
 // CHECK: return %[[SUM]]
 func.func @reduce_sum_not_from_exp(%arg0: tensor<1x384xf16>) -> tensor<1x1xf16> {
-  %0 = tosa.reduce_sum %arg0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %0 = tosa.reduce_sum %arg0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   func.return %0 : tensor<1x1xf16>
 }
 
@@ -331,13 +331,13 @@ func.func @reduce_sum_not_from_exp(%arg0: tensor<1x384xf16>) -> tensor<1x1xf16> 
 // CHECK-LABEL: @reduce_sum_unrecognized_consumer
 // CHECK: %[[EXP:.+]] = tosa.exp %arg0
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] : (tensor<1x384xf16>) -> tensor<1x384xf32>
-// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] {axis = 1 : i32} : (tensor<1x384xf32>) -> tensor<1x1xf32>
+// CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[CAST_BACK:.+]] = tosa.cast %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf16>
 // CHECK: %[[ADD:.+]] = tosa.add %arg1, %[[CAST_BACK]] : (tensor<1x1xf16>, tensor<1x1xf16>) -> tensor<1x1xf16>
 // CHECK: return %[[ADD]]
 func.func @reduce_sum_unrecognized_consumer(%arg0: tensor<1x384xf16>, %arg1: tensor<1x1xf16>) -> tensor<1x1xf16> {
   %0 = tosa.exp %arg0 : (tensor<1x384xf16>) -> tensor<1x384xf16>
-  %1 = tosa.reduce_sum %0 {axis = 1 : i32} : (tensor<1x384xf16>) -> tensor<1x1xf16>
+  %1 = tosa.reduce_sum %0 axis(1) : (tensor<1x384xf16>) -> tensor<1x1xf16>
   %2 = tosa.add %arg1, %1 : (tensor<1x1xf16>, tensor<1x1xf16>) -> tensor<1x1xf16>
   func.return %2 : tensor<1x1xf16>
 }

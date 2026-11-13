@@ -11,7 +11,7 @@ func.func @mlir_dot_sigmoid(%arg0: !migraphx.shaped<4x24x16xf16, 384x16x1>, %arg
   // CHECK: %[[SIGMOID:.*]] = tosa.sigmoid
   // CHECK-SAME: -> tensor<4x24x24xf16>
   %1 = migraphx.sigmoid %0 : <4x24x24xf16, 576x24x1> -> <4x24x24xf16, 1152x24x1>
-  // CHECK: tosa.custom %[[SIGMOID]] {domain_name = "rocmlir", implementation_attrs = "", operator_name = "expand_strides"}
+  // CHECK: tosa.custom %[[SIGMOID]] operator_name("expand_strides") domain_name("rocmlir") implementation_attrs("")
   // CHECK-SAME: (tensor<4x24x24xf16>) -> tensor<4x48x24xf16>
   // CHECK: tosa.reshape
   // CHECK-SAME: -> tensor<4608xf16>
@@ -28,7 +28,7 @@ func.func @mlir_dot_sigmoid(%arg0: !migraphx.shaped<4x5x16xf16, 80x16x1>, %arg1:
   // CHECK: %[[SIGMOID:.*]] = tosa.sigmoid
   // CHECK-SAME: -> tensor<4x5x24xf16>
   %1 = migraphx.sigmoid %0 : <4x5x24xf16, 120x24x1> -> <4x5x24xf16, 288x24x1>
-  // CHECK: tosa.custom %[[SIGMOID]] {domain_name = "rocmlir", implementation_attrs = "", operator_name = "expand_strides"}
+  // CHECK: tosa.custom %[[SIGMOID]] operator_name("expand_strides") domain_name("rocmlir") implementation_attrs("")
   // CHECK-SAME: (tensor<4x5x24xf16>) -> tensor<4x12x24xf16>
   // CHECK: tosa.reshape
   // CHECK-SAME: -> tensor<1152xf16>
