@@ -21,7 +21,8 @@
 // handler; rocmlir-driver installs none, so DiagnosticEngine drops everything
 // below an error and the same warnings are paid for but never seen.
 
-// CHECK: warning: codegen with no subarch in the target triple
+// (The "codegen with no subarch in the target triple" warning is gone now that
+// the AMDGPU triple carries the subarch, so the log must be empty.)
 // CHECK-NOT: warning:
 
 module {

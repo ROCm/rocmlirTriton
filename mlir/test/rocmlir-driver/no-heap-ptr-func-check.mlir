@@ -21,7 +21,8 @@
 // The kernel carries the attribute that drops the device-heap implicit arg.
 // CHECK-DAG: amdgpu-no-heap-ptr
 
-// The HSA kernarg metadata is present and scanned (other hidden kernargs remain),
-// while hidden_heap_v1 / __amd_rocclr_initHeap are rejected everywhere by the
-// --implicit-check-not flags on the RUN line.
-// CHECK-DAG: hidden_block_count_x
+// The HSA kernarg metadata is present and scanned, while hidden_heap_v1 /
+// __amd_rocclr_initHeap are rejected everywhere by the --implicit-check-not
+// flags on the RUN line.  (The backend no longer lists unused hidden kernargs
+// at all, so there is no other hidden_* entry left to anchor on.)
+// CHECK-DAG: kernarg_segment_size

@@ -26,8 +26,8 @@
 
 // TOSA-LABEL: func.func @host_ieee
 // TOSA-SAME: rock.kernel
-// TOSA: tosa.maximum {{.*}}nan_mode = IGNORE
-// TOSA: tosa.minimum {{.*}}nan_mode = IGNORE
+// TOSA: tosa.maximum {{.*}}nan_mode<IGNORE>
+// TOSA: tosa.minimum {{.*}}nan_mode<IGNORE>
 
 // Leak 2: `rock-tosa-to-elementwise` picks between the propagating min/max pair
 // and the num pair. The host never reaches it (it goes through upstream
