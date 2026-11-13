@@ -80,7 +80,7 @@ func.func @migraphx_convert_int4_signed(%arg0: !migraphx.shaped<16xsi4, 1>) -> !
 
 // CHECK-LABEL: @migraphx_convert_int4_unsigned
 // CHECK: tosa.custom
-// CHECK-SAME: {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi4>) -> tensor<16xi8>
+// CHECK-SAME: operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi4>) -> tensor<16xi8>
 func.func @migraphx_convert_int4_unsigned(%arg0: !migraphx.shaped<16xui4, 1>) -> !migraphx.shaped<16xui8, 1> {
   %0 = migraphx.convert %arg0 : <16xui4, 1> to <16xui8, 1>
   return %0 : !migraphx.shaped<16xui8, 1>
@@ -88,7 +88,7 @@ func.func @migraphx_convert_int4_unsigned(%arg0: !migraphx.shaped<16xui4, 1>) ->
 
 // CHECK-LABEL: @migraphx_convert_int4_unsigned_reverse
 // CHECK: tosa.custom
-// CHECK-SAME: {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi8>) -> tensor<16xi4>
+// CHECK-SAME: operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi8>) -> tensor<16xi4>
 func.func @migraphx_convert_int4_unsigned_reverse(%arg0: !migraphx.shaped<16xui8, 1>) -> !migraphx.shaped<16xui4, 1> {
   %0 = migraphx.convert %arg0 : <16xui8, 1> to <16xui4, 1>
   return %0 : !migraphx.shaped<16xui4, 1>
@@ -96,7 +96,7 @@ func.func @migraphx_convert_int4_unsigned_reverse(%arg0: !migraphx.shaped<16xui8
 
 // CHECK-LABEL: @migraphx_convert_int4_unsigned_to_float
 // CHECK: tosa.custom
-// CHECK-SAME: {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi4>) -> tensor<16xf32>
+// CHECK-SAME: operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi4>) -> tensor<16xf32>
 func.func @migraphx_convert_int4_unsigned_to_float(%arg0: !migraphx.shaped<16xui4, 1>) -> !migraphx.shaped<16xf32, 1> {
   %0 = migraphx.convert %arg0 : <16xui4, 1> to <16xf32, 1>
   return %0 : !migraphx.shaped<16xf32, 1>
@@ -104,7 +104,7 @@ func.func @migraphx_convert_int4_unsigned_to_float(%arg0: !migraphx.shaped<16xui
 
 // CHECK-LABEL: @migraphx_convert_int4_float_to_unsigned
 // CHECK: tosa.custom
-// CHECK-SAME: {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi4>
+// CHECK-SAME: operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi4>
 func.func @migraphx_convert_int4_float_to_unsigned(%arg0: !migraphx.shaped<16xf32, 1>) -> !migraphx.shaped<16xui4, 1> {
   %0 = migraphx.convert %arg0 : <16xf32, 1> to <16xui4, 1>
   return %0 : !migraphx.shaped<16xui4, 1>
@@ -120,7 +120,7 @@ func.func @migraphx_div_si32(%arg0: !migraphx.shaped<1x36x384x64xsi32, 884736x24
 
 // CHECK-LABEL: @migraphx_div_ui32
 // CHECK: tosa.custom
-// CHECK-SAME: {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_div"} : (tensor<1x36x384x64xi32>, tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi32>
+// CHECK-SAME: operator_name("unsigned_div") domain_name("rocmlir") implementation_attrs("") : (tensor<1x36x384x64xi32>, tensor<1x36x384x64xi32>) -> tensor<1x36x384x64xi32>
 func.func @migraphx_div_ui32(%arg0: !migraphx.shaped<1x36x384x64xui32, 884736x24576x64x1>, %arg1: !migraphx.shaped<1x36x384x64xui32, 884736x24576x64x1>) -> !migraphx.shaped<1x36x384x64xui32, 884736x24576x64x1> attributes{rock.kernel, rock.arch = "gfx908"} {
   %0 = migraphx.div %arg0, %arg1 : <1x36x384x64xui32, 884736x24576x64x1>, <1x36x384x64xui32, 884736x24576x64x1> -> <1x36x384x64xui32, 884736x24576x64x1>
   return %0 : !migraphx.shaped<1x36x384x64xui32, 884736x24576x64x1>
@@ -208,8 +208,8 @@ func.func @basic_add_si32(%arg0: !migraphx.shaped<1x112x112x64xsi32, 802816x7168
 
 // CHECK-LABEL: func @conv_with_quant_si8
 // CHECK: tosa.conv2d
-// CHECK-SAME: pad = array<i64: 3, 2, 3, 2>
-// CHECK-SAME: stride = array<i64: 2, 2>
+// CHECK-SAME: pad([3, 2, 3, 2])
+// CHECK-SAME: stride([2, 2])
 // CHECK-SAME: (tensor<1x224x224x3xi8>, tensor<64x7x7x3xi8>, tensor<64xi32>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x112x112x64xi32>
 // CHECK: tosa.cast{{.*}}(tensor<1x64x112x112xi32>) -> tensor<1x64x112x112xf32>
 // CHECK: tosa.cast{{.*}}(tensor<1x64x1x1xi32>) -> tensor<1x64x1x1xf32>

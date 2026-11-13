@@ -32,7 +32,7 @@ func.func @eliminate_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> {
 // Test 3: Keep necessary cast (different types)
 // CHECK-LABEL: @keep_necessary_cast
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> tensor<4xf16>
-// CHECK: %[[CAST:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xf16>
+// CHECK: %[[CAST:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xf16>
 // CHECK: return %[[CAST]] : tensor<4xf16>
 func.func @keep_necessary_cast(%arg0: tensor<4xf32>) -> tensor<4xf16> {
   %0 = tosa.cast %arg0 : (tensor<4xf32>) -> tensor<4xf16>
@@ -44,7 +44,7 @@ func.func @keep_necessary_cast(%arg0: tensor<4xf32>) -> tensor<4xf16> {
 // Test 4: Partial cast chain elimination
 // CHECK-LABEL: @partial_cast_chain
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> tensor<4xf16>
-// CHECK: %[[CAST:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xf16>
+// CHECK: %[[CAST:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xf16>
 // CHECK: return %[[CAST]] : tensor<4xf16>
 func.func @partial_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf16> {
   %0 = tosa.cast %arg0 : (tensor<4xf32>) -> tensor<4xf32>
@@ -70,9 +70,9 @@ func.func @multiple_independent_casts(%arg0: tensor<4xf32>, %arg1: tensor<4xi32>
 // Test 6: Complex cast chain with intermediate operations
 // CHECK-LABEL: @complex_cast_chain
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> tensor<4xf32>
-// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xf16>
+// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xf16>
 // CHECK: %[[ABS:.*]] = tosa.abs %[[CAST0]] : (tensor<4xf16>) -> tensor<4xf16>
-// CHECK: %[[CAST1:.*]] = tosa.cast %[[ABS]] input_unsigned(false) : (tensor<4xf16>) -> tensor<4xf32>
+// CHECK: %[[CAST1:.*]] = tosa.cast %[[ABS]] : (tensor<4xf16>) -> tensor<4xf32>
 // CHECK-NOT: tosa.cast %[[CAST1]]
 // CHECK: return %[[CAST1]] : tensor<4xf32>
 func.func @complex_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> {
@@ -103,8 +103,8 @@ func.func @long_redundant_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> {
 // Test 8: Mixed necessary and unnecessary casts
 // CHECK-LABEL: @mixed_casts
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> tensor<4xi8>
-// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xi32>
-// CHECK: %[[CAST1:.*]] = tosa.cast %[[CAST0]] input_unsigned(false) : (tensor<4xi32>) -> tensor<4xi8>
+// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xi32>
+// CHECK: %[[CAST1:.*]] = tosa.cast %[[CAST0]] : (tensor<4xi32>) -> tensor<4xi8>
 // CHECK: return %[[CAST1]] : tensor<4xi8>
 func.func @mixed_casts(%arg0: tensor<4xf32>) -> tensor<4xi8> {
   %0 = tosa.cast %arg0 : (tensor<4xf32>) -> tensor<4xf32>  // redundant
@@ -130,7 +130,7 @@ func.func @cast_multiple_uses(%arg0: tensor<4xf32>) -> (tensor<4xf32>, tensor<4x
 // Test 10: Complex cast chain with multiple uses
 // CHECK-LABEL: @complex_cast_chain_multiple_uses
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf16>)
-// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xf16>
+// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xf16>
 // CHECK-NOT: tosa.cast %[[CAST0]]
 // CHECK: %[[ABS:.*]] = tosa.abs %[[CAST0]] : (tensor<4xf16>) -> tensor<4xf16>
 // CHECK: return %[[ARG0]], %[[ABS]] : tensor<4xf32>, tensor<4xf16>
@@ -147,8 +147,8 @@ func.func @complex_cast_chain_multiple_uses(%arg0: tensor<4xf32>) -> (tensor<4xf
 // Test 11: Preserve cast chain involving Float8E8M0FNUType
 // CHECK-LABEL: @preserve_f8e8m0fnu_cast_chain
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>) -> tensor<4xf32>
-// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] input_unsigned(false) : (tensor<4xf32>) -> tensor<4xf8E8M0FNU>
-// CHECK: %[[CAST1:.*]] = tosa.cast %[[CAST0]] input_unsigned(false) : (tensor<4xf8E8M0FNU>) -> tensor<4xf32>
+// CHECK: %[[CAST0:.*]] = tosa.cast %[[ARG0]] : (tensor<4xf32>) -> tensor<4xf8E8M0FNU>
+// CHECK: %[[CAST1:.*]] = tosa.cast %[[CAST0]] : (tensor<4xf8E8M0FNU>) -> tensor<4xf32>
 // CHECK: return %[[CAST1]] : tensor<4xf32>
 func.func @preserve_f8e8m0fnu_cast_chain(%arg0: tensor<4xf32>) -> tensor<4xf32> {
   %0 = tosa.cast %arg0 : (tensor<4xf32>) -> tensor<4xf8E8M0FNU>
@@ -221,7 +221,7 @@ func.func @preserve_fp_to_int_cast_of_widened_int(%arg0: tensor<4xi32>) -> tenso
 // CHECK-LABEL: @boolean_fp_to_int_cast_shared_widening
 // CHECK-SAME: (%[[ARG0:.*]]: tensor<4xf32>, %[[ARG1:.*]]: tensor<4xf32>)
 // CHECK: %[[PRED:.*]] = tosa.greater %[[ARG0]], %[[ARG1]]
-// CHECK: %[[FLOAT:.*]] = tosa.cast %[[PRED]] input_unsigned(false) : (tensor<4xi1>) -> tensor<4xf32>
+// CHECK: %[[FLOAT:.*]] = tosa.cast %[[PRED]] : (tensor<4xi1>) -> tensor<4xf32>
 // CHECK-NOT: tosa.custom
 // CHECK: %[[INT:.*]] = tosa.cast %[[PRED]] input_unsigned(false) : (tensor<4xi1>) -> tensor<4xi8>
 // CHECK: return %[[INT]], %[[FLOAT]]

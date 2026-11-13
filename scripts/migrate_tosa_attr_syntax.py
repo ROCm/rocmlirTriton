@@ -224,3 +224,59 @@ def main(paths):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
+
+# ---------------------------------------------------------------------------
+# Second pass: CHECK lines that only carry an attribute *fragment*, e.g.
+#   // CHECK: tosa.conv2d {{.*}}
+#   // CHECK-SAME: pad = array<i64: 1, 0, 1, 0>
+# The op is taken from the closest preceding line that names a tosa op.
+# ---------------------------------------------------------------------------
+CHECK_RE = re.compile(r"//\s*[A-Za-z_0-9-]*(CHECK|SAFE|PREFIX|GPU|CPU)[A-Za-z_0-9-]*(-SAME|-DAG|-NEXT)?:")
+
+
+def migrate_check_fragments(text):
+    lines = text.split("\n")
+    cur = None
+    changed = 0
+    for i, line in enumerate(lines):
+        m = None
+        for m in OP_RE.finditer(line):
+            pass
+        if m and RULES.get(m.group(2)):
+            cur = RULES[m.group(2)]
+        if not cur or not CHECK_RE.search(line):
+            continue
+        # Don't touch a line that talks about some other dialect's op.
+        if re.search(r"\b(?!tosa\.)[a-z_][a-z_0-9]*\.[a-z_][a-z_0-9]*\b", line):
+            continue
+        body = line.split(":", 1)[1]
+        dict_m = re.search(r"\{([^{}]*)\}", body)
+        if dict_m:
+            entries = []
+            for item in split_top_level(dict_m.group(1)):
+                kv = item.split("=", 1)
+                entries.append((kv[0].strip(), kv[1].strip()) if len(kv) == 2
+                               else (None, item))
+            known = {k: v for k, v in entries if k}
+            moved = [render(n, d, s, known.pop(n))
+                     for n, d, s in cur if n in known]
+            if not moved:
+                continue
+            new = " ".join(moved)
+            rest = [item if k is None else "%s = %s" % (k, known[k])
+                    for k, item in entries if not k or k in known]
+            if rest:
+                new += " {%s}" % ", ".join(rest)
+            lines[i] = line[:line.index(":", line.index("//") + 2) + 1] + \
+                body[:dict_m.start()] + new + body[dict_m.end():]
+            changed += 1
+            continue
+        frag = re.fullmatch(r"\s*([a-z_0-9]+) = (.*?)\s*", body)
+        if frag and any(frag.group(1) == n for n, _, _ in cur):
+            name = frag.group(1)
+            delim, style = next((d, s) for n, d, s in cur if n == name)
+            lines[i] = line[:line.index(":", line.index("//") + 2) + 1] + " " + \
+                render(name, delim, style, frag.group(2))
+            changed += 1
+    return "\n".join(lines), changed

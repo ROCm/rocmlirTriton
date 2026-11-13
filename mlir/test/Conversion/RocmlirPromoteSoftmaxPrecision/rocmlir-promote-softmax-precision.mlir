@@ -17,7 +17,7 @@
 // and the original f16 reduce_sum / reciprocal / mul should be eliminated.
 
 // CHECK-LABEL: @softmax_norm_f16
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] input_unsigned(false) : (tensor<1x384xf16>) -> tensor<1x384xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
@@ -39,7 +39,7 @@ func.func @softmax_norm_f16(%arg0: tensor<1x384xf16>) -> tensor<1x384xf16> {
 // bf16 variant should also be promoted.
 
 // CHECK-LABEL: @softmax_norm_bf16
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] input_unsigned(false) : (tensor<1x384xbf16>) -> tensor<1x384xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
@@ -61,7 +61,7 @@ func.func @softmax_norm_bf16(%arg0: tensor<1x384xbf16>) -> tensor<1x384xbf16> {
 // f32 softmax should not be promoted (already f32).
 
 // CHECK-LABEL: @softmax_norm_f32_noop
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
 // CHECK: %[[RECIP:.+]] = tosa.reciprocal %[[SUM]] : (tensor<1x1xf32>) -> tensor<1x1xf32>
@@ -84,7 +84,7 @@ func.func @softmax_norm_f32_noop(%arg0: tensor<1x384xf32>) -> tensor<1x384xf32> 
 // is still recognized and promoted end-to-end.
 
 // CHECK-LABEL: @softmax_norm_reversed_operands
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] input_unsigned(false) : (tensor<1x384xf16>) -> tensor<1x384xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>
@@ -110,7 +110,7 @@ func.func @softmax_norm_reversed_operands(%arg0: tensor<1x384xf16>) -> tensor<1x
 // reciprocal/mul stay in f16.
 
 // CHECK-LABEL: @reduce_sum_no_softmax_match
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK-DAG: %[[EXP0:.+]] = tosa.exp %arg0
 // CHECK-DAG: %[[EXP1:.+]] = tosa.exp %arg1
 // CHECK: %[[CAST_EXP1:.+]] = tosa.cast %[[EXP1]] input_unsigned(false) : (tensor<1x384xf16>) -> tensor<1x384xf32>
@@ -168,7 +168,7 @@ func.func @plain_mul_no_softmax(%arg0: tensor<1x384xf16>, %arg1: tensor<1x384xf1
 // 3D tensor with axis=2 reduction (attention-like shape).
 
 // CHECK-LABEL: @softmax_norm_3d_attention
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK: %[[EXP:.+]] = tosa.exp
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] input_unsigned(false) : (tensor<1x36x384xf16>) -> tensor<1x36x384xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(2) : (tensor<1x36x384xf32>) -> tensor<1x36x1xf32>
@@ -278,7 +278,7 @@ func.func @lse_log_plus_max_f32_noop(%arg0: tensor<1x384xf32>, %arg1: tensor<1x1
 // win is shared and there's no redundant f16 reduce_sum left over.
 
 // CHECK-LABEL: @softmax_and_lse_shared_reduce_sum
-// CHECK-DAG: %[[SHIFT:.+]] = "tosa.const"()
+// CHECK-DAG: %[[SHIFT:.+]] = tosa.const
 // CHECK-DAG: %[[EXP:.+]] = tosa.exp %arg0
 // CHECK: %[[CAST_EXP:.+]] = tosa.cast %[[EXP]] input_unsigned(false) : (tensor<1x384xf16>) -> tensor<1x384xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %[[CAST_EXP]] axis(1) : (tensor<1x384xf32>) -> tensor<1x1xf32>

@@ -133,8 +133,7 @@ module  {
   // CHECK: tosa.cast{{.*}}i8{{.*}}i32
   // CHECK: tosa.add
   // CHECK: tosa.clamp
-  // CHECK-SAME: max_val = 127
-  // CHECK-SAME: min_val = -128
+  // CHECK-SAME: min_val(-128 : i32) max_val(127 : i32)
   // CHECK: tosa.cast{{.*}}i8
   func.func @quantize_scale_bias(%arg: !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xi8, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xi8, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
     %1 = migraphx.quantizelinear %arg, %scale, %bias : <1x112x112x64xf32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xi8, 64x64x64x1> -> <1x112x112x64xi8, 802816x7168x64x1>
@@ -147,8 +146,7 @@ module  {
   // CHECK: tosa.cast{{.*}}f8E4M3FNUZ{{.*}}f32
   // CHECK: tosa.add
   // CHECK: tosa.clamp
-  // CHECK-SAME: max_val = 2.400000e+02
-  // CHECK-SAME: min_val = -2.400000e+02
+  // CHECK-SAME: min_val(-2.400000e+02 : f32) max_val(2.400000e+02 : f32)
   // CHECK: tosa.cast{{.*}}f8E4M3FNUZ
   func.func @quantize_scale_bias_fp8(%arg: !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xf8E4M3FNUZ, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xf8E4M3FNUZ, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
     %1 = migraphx.quantizelinear %arg, %scale, %bias : <1x112x112x64xf32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xf8E4M3FNUZ, 64x64x64x1> -> <1x112x112x64xf8E4M3FNUZ, 802816x7168x64x1>
@@ -161,8 +159,7 @@ module  {
   // CHECK: tosa.cast{{.*}}f8E4M3FN{{.*}}f32
   // CHECK: tosa.add
   // CHECK: tosa.clamp
-  // CHECK-SAME: max_val = 4.480000e+02
-  // CHECK-SAME: min_val = -4.480000e+02
+  // CHECK-SAME: min_val(-4.480000e+02 : f32) max_val(4.480000e+02 : f32)
   // CHECK: tosa.cast{{.*}}f8E4M3FN
   func.func @quantize_scale_bias_fp8_ocp(%arg: !migraphx.shaped<1x112x112x64xf32, 802816x7168x64x1>, %scale: !migraphx.shaped<1x1x1x64xf32, 64x64x64x1>, %bias: !migraphx.shaped<1x1x1x64xf8E4M3FN, 64x64x64x1>) -> !migraphx.shaped<1x112x112x64xf8E4M3FN, 802816x7168x64x1> attributes {rock.kernel = "mixr"} {
     %1 = migraphx.quantizelinear %arg, %scale, %bias : <1x112x112x64xf32, 802816x7168x64x1>, <1x1x1x64xf32, 64x64x64x1>, !migraphx.shaped<1x1x1x64xf8E4M3FN, 64x64x64x1> -> <1x112x112x64xf8E4M3FN, 802816x7168x64x1>
@@ -727,7 +724,7 @@ module {
   // CHECK-LABEL: func.func @func_convert_f32_to_si8
   // CHECK-NOT: tosa.cast
   // CHECK: tosa.custom
-  // CHECK-SAME: operator_name = "fp_to_int_cast"
+  // CHECK-SAME: operator_name("fp_to_int_cast")
   // CHECK-SAME: (tensor<16xf32>) -> tensor<16xi8>
   func.func @func_convert_f32_to_si8(%arg0: !migraphx.shaped<16xf32, 1>) -> !migraphx.shaped<16xsi8, 1> {
     %0 = migraphx.convert %arg0 : <16xf32, 1> to <16xsi8, 1>
