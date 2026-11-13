@@ -32,8 +32,8 @@
 
 // EXPERT: s_setreg_imm32_b32 hwreg(HW_REG_WAVE_SCHED_MODE{{.*}}), 2
 // NOEXPERT-NOT: HW_REG_WAVE_SCHED_MODE
-// GFX13: .amdgcn_target "amdgcn-amd-amdhsa-unknown-gfx1310"
-module attributes {llvm.target_triple = "amdgcn-amd-amdhsa"} {
+// GFX13: .amdgcn_target "amdgpu13.10-amd-amdhsa-unknown-gfx1310"
+module {
   llvm.func amdgpu_kernelcc @kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
     %0 = llvm.load %arg0 : !llvm.ptr -> f32
     %1 = llvm.load %arg1 : !llvm.ptr -> f32

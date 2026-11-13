@@ -12,7 +12,7 @@
 // CHECK: // -----// LLVM IR Dump //----- //
 // CHECK-NOT: @__ocml_small_f32
 // CHECK-LABEL: define amdgpu_kernel void @kernel
-// CHECK-COUNT-128: fadd float
+// CHECK-COUNT-128: fadd{{.*}} float
 // CHECK-NOT: @__ocml_small_f32
 // CHECK: attributes #
 

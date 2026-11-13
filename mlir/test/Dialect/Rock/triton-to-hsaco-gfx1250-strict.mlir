@@ -15,10 +15,8 @@
 // RUN: env AMDGCN_ENABLE_DUMP=1 rocmlir-opt -triton-to-hsaco='arch=gfx1250' %s 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=NONSTRICT
 
-// The vendor/environment spelling in the middle of the triple is an LLVM
-// detail that has changed across bumps, so only the arch tail is pinned here.
-// STRICT: .amdgcn_target "amdgcn-amd-amdhsa{{.*}}-gfx1250-strict"
-// NONSTRICT: .amdgcn_target "amdgcn-amd-amdhsa{{.*}}-gfx1250"
+// STRICT: .amdgcn_target "amdgpu12.50s-amd-amdhsa-unknown-gfx1250-strict"
+// NONSTRICT: .amdgcn_target "amdgpu12.50-amd-amdhsa-unknown-gfx1250"
 // NONSTRICT-NOT: gfx1250-strict
 
 // Strict is modelled as a modifier on gfx1250 rather than as its own GPU
