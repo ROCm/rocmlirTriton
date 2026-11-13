@@ -59,7 +59,7 @@
 // finite normalization operands while retaining the original values for LSE.
 // SAFE-LABEL: func.func @host_naive_attention
 // SAFE: %[[MAX:.*]] = tosa.reduce_max
-// SAFE: %[[LOWEST:.*]] = "tosa.const"() <{values = dense<-3.40282347E+38> : tensor<1x1x1xf32>}> : () -> tensor<1x1x1xf32>
+// SAFE: %[[LOWEST:.*]] = tosa.const values(dense<-3.40282347E+38> : tensor<1x1x1xf32>) : () -> tensor<1x1x1xf32>
 // SAFE: %[[SAFE_MAX:.*]] = tosa.maximum %[[MAX]], %[[LOWEST]]
 // SAFE: %[[NORMALIZED:.*]] = tosa.sub %{{.*}}, %[[SAFE_MAX]]
 // SAFE: %[[EXPS:.*]] = tosa.exp %[[NORMALIZED]]
@@ -67,7 +67,7 @@
 // SAFE: %[[MAX_FOR_LSE:.*]] = tosa.cast %[[MAX]]
 // SAFE: %[[LOG_SUM:.*]] = tosa.log
 // SAFE: tosa.add %[[LOG_SUM]], %[[MAX_FOR_LSE]]
-// SAFE: %[[ONE:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x1x1xf32>}> : () -> tensor<1x1x1xf32>
+// SAFE: %[[ONE:.*]] = tosa.const values(dense<1.000000e+00> : tensor<1x1x1xf32>) : () -> tensor<1x1x1xf32>
 // SAFE: %[[SAFE_SUM:.*]] = tosa.maximum %[[SUM]], %[[ONE]]
 // SAFE: tosa.reciprocal %[[SAFE_SUM]]
 // SAFE: tosa.matmul

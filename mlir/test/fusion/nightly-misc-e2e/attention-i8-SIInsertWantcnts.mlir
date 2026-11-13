@@ -15,6 +15,6 @@
 //
 // Upstream fix: PR llvm/llvm-project#193499 (commit 81d618b6bc1e).
 
-// RUN: rocmlir-gen -operation attention -t i8 --arch %arch --num_cu 256 --num_chiplets 8 -g 8 -seq_len_q 7 -seq_len_k 4096 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 16 -head_dim_v 16 -with-attn-scale=False -with-attn-bias=False -transQ=False -transK=True -transV=False -transO=False -causal=False -return_lse=False -split_kv=1 --perf_config=attn:v1:16,16,512,1,1,16,32,1,2,0,0 | rocmlir-driver -c | FileCheck %s
+// RUN: rocmlir-gen -operation attention -t i8 --arch %arch --num_cu 256 --num_chiplets 8 -g 8 -seq_len_q 7 -seq_len_k 4096 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 16 -head_dim_v 16 -with-attn-scale=false -with-attn-bias=false -transQ=false -transK=true -transV=false -transO=false -causal=false -return_lse=false -split_kv=1 --perf_config=attn:v1:16,16,512,1,1,16,32,1,2,0,0 | rocmlir-driver -c | FileCheck %s
 
 // CHECK: triton.hsaco

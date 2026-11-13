@@ -13,8 +13,8 @@
 // RUN:   --arch gfx950:sramecc+:xnack- \
 // RUN:   -g 8 -seq_len_q 1 -seq_len_k 349 -num_heads_q 128 -num_heads_kv 2 \
 // RUN:   -head_dim_qk 233 -head_dim_v 236 \
-// RUN:   -with-attn-scale=True -with-attn-bias=True \
-// RUN:   -return_lse=True -split_kv=8 \
+// RUN:   -with-attn-scale=true -with-attn-bias=true \
+// RUN:   -return_lse=true -split_kv=8 \
 // RUN:   --perf_config=attn:v1:64,32,16,1,1,1,32,1,2,2,2 \
 // RUN:   --last_valid_kv_index=255,148,29,264,122,189,61,184 \
 // RUN:   | rocmlir-driver -c | FileCheck %s

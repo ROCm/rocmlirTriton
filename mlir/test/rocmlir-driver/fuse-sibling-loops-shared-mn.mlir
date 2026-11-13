@@ -18,7 +18,7 @@
 // fusion there is a single loop holding the four sub-gemms and only four loads:
 // the two M-segment A tiles and the two N-segment B tiles.
 
-// RUN: rocmlir-gen -operation gemm -t f16 -out_datatype f16 --arch gfx1100 -g 1 -m 77 -k 768 -n 36480 -transA=False -transB=False -transO=False --perf_config=gemm:v2:80,80,32,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1 \
+// RUN: rocmlir-gen -operation gemm -t f16 -out_datatype f16 --arch gfx1100 -g 1 -m 77 -k 768 -n 36480 -transA=false -transB=false -transO=false --perf_config=gemm:v2:80,80,32,1,1,4,0,1,1,0,0,-1,-1,-1,-1,-1,-1 \
 // RUN: | rocmlir-driver -c --mlir-print-ir-before=rock-insert-output-fusion-loads -o /dev/null 2>&1 \
 // RUN: | FileCheck %s
 

@@ -28,7 +28,7 @@
 // CHECK-LABEL: func.func @host_naive_attention
 // CHECK: %[[qkTensor:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor:.*]], %{{.*}}, %{{.*}} {acc_type = f32} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf16>, tensor<1xf16>) -> [[squareShape:tensor<.*>]]
 // CHECK-DAG: %[[sqkTensor:.*]] = tosa.mul %[[qkTensor]], %[[scaleTensor:.*]], %{{.*}} : ([[squareShape]], [[squareShape]], tensor<1xi8>) -> [[squareShape]]
-// CHECK-DAG: %[[sqkTensorCast:.*]] = tosa.cast %[[sqkTensor]] : ([[squareShape]]) -> [[squareShapeF32:tensor<.*>]]
+// CHECK-DAG: %[[sqkTensorCast:.*]] = tosa.cast %[[sqkTensor]] input_unsigned(false) : ([[squareShape]]) -> [[squareShapeF32:tensor<.*>]]
 // CHECK-DAG: %[[sqkMaxs:.*]] = tosa.reduce_max %[[sqkTensorCast]] {{.*}} : ([[squareShapeF32]]) -> [[reducedShape:tensor<.*>]]
 // CHECK-DAG: %[[safeSqkMaxs:.*]] = tosa.maximum %[[sqkMaxs]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK-DAG: %[[normilizedSqkTensor:.*]] = tosa.sub %[[sqkTensorCast]], %[[safeSqkMaxs]] : ([[squareShapeF32]], [[reducedShape]]) -> [[squareShapeF32]]
@@ -37,7 +37,7 @@
 // CHECK-DAG: %[[safeExpsSums:.*]] = tosa.maximum %[[expsSumsTensor]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK-DAG: %[[invExpsSums:.*]] = tosa.reciprocal %[[safeExpsSums]] : ([[reducedShape]]) -> [[reducedShape]]
 // CHECK-DAG: %[[softmaxTensor:.*]] = tosa.mul %[[expsTensor]], %[[invExpsSums]], %{{.*}} : ([[squareShapeF32]], [[reducedShape]], tensor<1xi8>) -> [[squareShapeF32]] 
-// CHECK-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] : ([[squareShapeF32]]) -> [[squareShape]]
+// CHECK-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] input_unsigned(false) : ([[squareShapeF32]]) -> [[squareShape]]
 // CHECK-DAG: %[[resultTensor:.*]] = tosa.matmul %[[softmaxTensorCast]], %[[valuesTensor:.*]], %{{.*}}, %{{.*}} {acc_type = f32} : ([[squareShape]], [[valuesShape:tensor<.*>]], tensor<1xf16>, tensor<1xf16>) -> [[squareShape:tensor<.*>]]
 // CHECK: return
 

@@ -10,8 +10,8 @@ module {
     %cst = arith.constant dense<0.000000e+00> : tensor<64xf32>
     %input_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
     %weight_zp = "tosa.const"() {values = dense<0.0> : tensor<1xf32>} : () -> tensor<1xf32>
-    %0 = tosa.conv2d %arg0, %arg1, %cst, %input_zp, %weight_zp {acc_type = f32, dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
-    %1 = tosa.clamp %0 {max_val = 6.000000e+00 : f32, min_val = 0.000000e+00 : f32} : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
+    %0 = tosa.conv2d %arg0, %arg1, %cst, %input_zp, %weight_zp pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<1x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x32x32x64xf32>
+    %1 = tosa.clamp %0 min_val(0.000000e+00 : f32) max_val(6.000000e+00 : f32) : (tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
     %2 = tosa.add %arg2, %1 : (tensor<1x32x32x64xf32>, tensor<1x32x32x64xf32>) -> tensor<1x32x32x64xf32>
     return %2 : tensor<1x32x32x64xf32>
   }

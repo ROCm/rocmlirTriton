@@ -11,7 +11,7 @@ module {
 // CLONE: [1 1 1]
 // CLONE-NEXT: Unranked Memref base
   func.func @test_fusion(%arg0: tensor<512x16xf32>) -> tensor<512x1xf32> attributes {rock.kernel, rock.reduce, rock.arch = "##TOKEN_ARCH##"} {
-    %0 = "tosa.reduce_sum"(%arg0) {axis = 1 : i32} : (tensor<512x16xf32>) -> tensor<512x1xf32>
+    %0 = "tosa.reduce_sum"(%arg0) <{axis = 1 : i32}> : (tensor<512x16xf32>) -> tensor<512x1xf32>
     return %0 : tensor<512x1xf32>
   }
 }
