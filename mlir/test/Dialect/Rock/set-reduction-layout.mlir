@@ -630,7 +630,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 // rank-1 tt.trans, whose encodings a transpose leaves alone.
 
 #blockedR = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
-#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}>
+// tt.reshape now always infers (and verifies) the linearized result layout.
+#blocked = #ttg.linear<{register = [[1, 0], [4, 0], [8, 0], [16, 0]], lane = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16]], warp = [[0, 32], [2, 0]], block = []}>
 #blockedA = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @anchor_rejects_reshape
@@ -641,7 +642,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %sb = tt.splat %pb : !tt.ptr<f16> -> tensor<16x128x!tt.ptr<f16>, #blockedR>
     %la = tt.load %sa : tensor<128x32x!tt.ptr<f16>, #blockedA>
     %lb = tt.load %sb : tensor<16x128x!tt.ptr<f16>, #blockedR>
-    %rb = tt.reshape %lb allow_reorder : tensor<16x128xf16, #blockedR> -> tensor<32x64xf16, #blocked>
+    %rb = tt.reshape %lb : tensor<16x128xf16, #blockedR> -> tensor<32x64xf16, #blocked>
     %ca = ttg.convert_layout %la : tensor<128x32xf16, #blockedA> -> tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>>
     %cb = ttg.convert_layout %rb : tensor<32x64xf16, #blocked> -> tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>>
     %d = tt.dot %ca, %cb, %acc : tensor<128x32xf16, #ttg.dot_op<{opIdx = 0, parent = #blockedA}>> * tensor<32x64xf16, #ttg.dot_op<{opIdx = 1, parent = #blockedA}>> -> tensor<128x64xf32, #blockedA>
