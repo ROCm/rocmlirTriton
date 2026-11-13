@@ -49,9 +49,9 @@ module attributes {rock.arch = "gfx942"} {
   //
   // The `llvm.fmul` is the log2(e) scaling inside the exp expansion.
   // CHECK-LABEL: llvm.func @transcendentals_f32
-  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, afn>} : f32
+  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} fastmath<nsz, contract, afn> : f32
   // CHECK-DAG: llvm.call @llvm.exp2.f32(%{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract, afn>} : (f32) -> f32
-  // CHECK-DAG: llvm.intr.log(%{{.*}}) {fastmathFlags = #llvm.fastmath<nsz, contract, afn>} : (f32) -> f32
+  // CHECK-DAG: llvm.intr.log(%{{.*}}) fastmath<nsz, contract, afn> : (f32) -> f32
   // CHECK-DAG: rocdl.exp2 %{{.*}} f32 -> f32
   // CHECK-DAG: llvm.call @__ocml_log2_f32(%{{.*}}) : (f32) -> f32
   // CHECK-DAG: llvm.call @__ocml_sin_f32(%{{.*}}) : (f32) -> f32

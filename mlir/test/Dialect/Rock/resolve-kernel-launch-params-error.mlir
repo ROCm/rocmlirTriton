@@ -134,14 +134,14 @@ module attributes {
 // NA: module attributes {rock.grid_size.oversized_workgroup = 1 : i32, rock.not_applicable
 module attributes {
     "ttg.shared" = 0 : i32,
-    "ttg.num-warps" = 17 : i32,
+    "ttg.num-warps" = 32 : i32,
     "ttg.threads-per-warp" = 64 : i32,
     "ttg.num-ctas" = 1 : i32,
     "rock.grid_size.oversized_workgroup" = 1 : i32
 } {
   llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
 
-  // expected-error @+1 {{block size 1088 exceeds the AMDGPU workgroup size limit of 1024}}
+  // expected-error @+1 {{block size 2048 exceeds the AMDGPU workgroup size limit of 1024}}
   llvm.func @oversized_workgroup(%arg0: !llvm.ptr) attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950", rock.kernel} {
     llvm.return
   }
