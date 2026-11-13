@@ -35,10 +35,10 @@
 // CHECK: tosa.reshape %{{.*}}, %{{.*}} : (tensor<4x8x16xf32>, !tosa.shape<4>) -> tensor<1x4x8x16xf32>
 
 // Verify row range (dimension 2 = SEQ_LEN_Q = 8)
-// CHECK: %[[rowRange:.*]] = "tosa.const"() <{values = {{.*}} : tensor<8xi32>}> : () -> tensor<8xi32>
+// CHECK: %[[rowRange:.*]] = tosa.const values({{.*}} : tensor<8xi32>) : () -> tensor<8xi32>
 
 // Verify col range (dimension 3 = SEQ_LEN_KV = 16)
-// CHECK: %[[colRange:.*]] = "tosa.const"() <{values = {{.*}} : tensor<16xi32>}> : () -> tensor<16xi32>
+// CHECK: %[[colRange:.*]] = tosa.const values({{.*}} : tensor<16xi32>) : () -> tensor<16xi32>
 
 // Verify offset broadcast to 4D
 // CHECK: %[[offsetBroadcast:.*]] = tosa.mul %{{.*}}, %{{.*}}, %{{.*}} : (tensor<1x1x1x1xi32>, tensor<1x4x8x16xi32>, tensor<1xi8>) -> tensor<1x4x8x16xi32>
@@ -50,7 +50,7 @@
 // CHECK: %[[mask:.*]] = tosa.greater %{{.*}}, %{{.*}} : {{.*}} -> tensor<1x4x8x16xi1>
 
 // Verify mask application with -inf
-// CHECK: %[[negInf:.*]] = "tosa.const"() <{values = dense<0xFF800000> : tensor<1x4x8x16xf32>}> : () -> tensor<1x4x8x16xf32>
+// CHECK: %[[negInf:.*]] = tosa.const values(dense<0xFF800000> : tensor<1x4x8x16xf32>) : () -> tensor<1x4x8x16xf32>
 // CHECK: tosa.select %{{.*}}, %[[negInf]], %{{.*}} : {{.*}} -> tensor<1x4x8x16xf32>
 
 // Verify reshape back to 3D

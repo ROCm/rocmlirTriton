@@ -21,11 +21,11 @@
 // CHECK_F32-LABEL: func.func @host_naive_attention
 // CHECK_F32-SAME:  %[[outArg:[^:]*]]: memref<32768xf32>)
 // CHECK_F32:       %[[qIn:.*]] = tosa.reshape {{.*}} -> tensor<1x1024x32xf32>
-// CHECK_F32:       %[[qF64:.*]] = tosa.cast %[[qIn]] : (tensor<1x1024x32xf32>) -> tensor<1x1024x32xf64>
+// CHECK_F32:       %[[qF64:.*]] = tosa.cast %[[qIn]] input_unsigned(false) : (tensor<1x1024x32xf32>) -> tensor<1x1024x32xf64>
 // CHECK_F32:       %[[kIn:.*]] = tosa.reshape {{.*}} -> tensor<1x32x1024xf32>
-// CHECK_F32:       %[[kF64:.*]] = tosa.cast %[[kIn]] : (tensor<1x32x1024xf32>) -> tensor<1x32x1024xf64>
+// CHECK_F32:       %[[kF64:.*]] = tosa.cast %[[kIn]] input_unsigned(false) : (tensor<1x32x1024xf32>) -> tensor<1x32x1024xf64>
 // CHECK_F32:       %[[vIn:.*]] = tosa.reshape {{.*}} -> tensor<1x1024x32xf32>
-// CHECK_F32:       %[[vF64:.*]] = tosa.cast %[[vIn]] : (tensor<1x1024x32xf32>) -> tensor<1x1024x32xf64>
+// CHECK_F32:       %[[vF64:.*]] = tosa.cast %[[vIn]] input_unsigned(false) : (tensor<1x1024x32xf32>) -> tensor<1x1024x32xf64>
 // CHECK_F32:       %[[qk:.*]] = tosa.matmul %[[qF64]], %[[kF64]], %{{.*}}, %{{.*}} {acc_type = f64} : (tensor<1x1024x32xf64>, tensor<1x32x1024xf64>, tensor<1xf64>, tensor<1xf64>) -> tensor<1x1024x1024xf64>
 // CHECK_F32-DAG:   %[[qkMaxs:.*]] = tosa.reduce_max {{.*}} -> tensor<1x1024x1xf64>
 // CHECK_F32-DAG:   %[[normQk:.*]]  = tosa.sub {{.*}} -> tensor<1x1024x1024xf64>
@@ -34,7 +34,7 @@
 // CHECK_F32-DAG:   %[[invSums:.*]] = tosa.reciprocal {{.*}} -> tensor<1x1024x1xf64>
 // CHECK_F32-DAG:   %[[softmax:.*]] = tosa.mul {{.*}} -> tensor<1x1024x1024xf64>
 // CHECK_F32:       %[[result:.*]] = tosa.matmul %{{.*}}, %[[vF64]], %{{.*}}, %{{.*}} {acc_type = f64} : (tensor<1x1024x1024xf64>, tensor<1x1024x32xf64>, tensor<1xf64>, tensor<1xf64>) -> tensor<1x1024x32xf64>
-// CHECK_F32:       %[[resultF32:.*]] = tosa.cast %[[result]] : (tensor<1x1024x32xf64>) -> tensor<1x1024x32xf32>
+// CHECK_F32:       %[[resultF32:.*]] = tosa.cast %[[result]] input_unsigned(false) : (tensor<1x1024x32xf64>) -> tensor<1x1024x32xf32>
 // CHECK_F32:       memref.copy %{{.*}}, %[[outArg]]
 // CHECK_F32:       return
 
@@ -43,18 +43,18 @@
 // CHECK_F16-LABEL: func.func @host_naive_attention
 // CHECK_F16-SAME:  %[[outArg:[^:]*]]: memref<8192xf16>)
 // CHECK_F16:       %[[qIn:.*]] = tosa.reshape {{.*}} -> tensor<1x256x32xf16>
-// CHECK_F16:       %[[qF64:.*]] = tosa.cast %[[qIn]] : (tensor<1x256x32xf16>) -> tensor<1x256x32xf64>
+// CHECK_F16:       %[[qF64:.*]] = tosa.cast %[[qIn]] input_unsigned(false) : (tensor<1x256x32xf16>) -> tensor<1x256x32xf64>
 // CHECK_F16:       %[[kIn:.*]] = tosa.reshape {{.*}} -> tensor<1x32x256xf16>
-// CHECK_F16:       %[[kF64:.*]] = tosa.cast %[[kIn]] : (tensor<1x32x256xf16>) -> tensor<1x32x256xf64>
+// CHECK_F16:       %[[kF64:.*]] = tosa.cast %[[kIn]] input_unsigned(false) : (tensor<1x32x256xf16>) -> tensor<1x32x256xf64>
 // CHECK_F16:       %[[vIn:.*]] = tosa.reshape {{.*}} -> tensor<1x256x32xf16>
-// CHECK_F16:       %[[vF64:.*]] = tosa.cast %[[vIn]] : (tensor<1x256x32xf16>) -> tensor<1x256x32xf64>
+// CHECK_F16:       %[[vF64:.*]] = tosa.cast %[[vIn]] input_unsigned(false) : (tensor<1x256x32xf16>) -> tensor<1x256x32xf64>
 // CHECK_F16:       %[[qk:.*]] = tosa.matmul %[[qF64]], %[[kF64]], %{{.*}}, %{{.*}} {acc_type = f64} : (tensor<1x256x32xf64>, tensor<1x32x256xf64>, tensor<1xf64>, tensor<1xf64>) -> tensor<1x256x256xf64>
 // CHECK_F16-DAG:   tosa.reduce_max {{.*}} -> tensor<1x256x1xf64>
 // CHECK_F16-DAG:   tosa.exp {{.*}} -> tensor<1x256x256xf64>
 // CHECK_F16-DAG:   tosa.reduce_sum {{.*}} -> tensor<1x256x1xf64>
 // CHECK_F16-DAG:   tosa.reciprocal {{.*}} -> tensor<1x256x1xf64>
 // CHECK_F16:       %[[result:.*]] = tosa.matmul %{{.*}}, %[[vF64]], %{{.*}}, %{{.*}} {acc_type = f64} : (tensor<1x256x256xf64>, tensor<1x256x32xf64>, tensor<1xf64>, tensor<1xf64>) -> tensor<1x256x32xf64>
-// CHECK_F16:       %[[resultF16:.*]] = tosa.cast %[[result]] : (tensor<1x256x32xf64>) -> tensor<1x256x32xf16>
+// CHECK_F16:       %[[resultF16:.*]] = tosa.cast %[[result]] input_unsigned(false) : (tensor<1x256x32xf64>) -> tensor<1x256x32xf16>
 // CHECK_F16:       memref.copy %{{.*}}, %[[outArg]]
 // CHECK_F16:       return
 

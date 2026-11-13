@@ -45,8 +45,8 @@ func.func @bwd_data_conv2d_stride(%arg0: tensor<131072xf32>, %arg1: tensor<41943
 
 // -----
 // CHECK-LABEL: func @forward_group_conv2d
-// CHECK-DAG: %[[IZP:.*]] = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
-// CHECK-DAG: %[[WZP:.*]] = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
+// CHECK-DAG: %[[IZP:.*]] = tosa.const values(dense<0.000000e+00> : tensor<1xf32>) : () -> tensor<1xf32>
+// CHECK-DAG: %[[WZP:.*]] = tosa.const values(dense<0.000000e+00> : tensor<1xf32>) : () -> tensor<1xf32>
 // CHECK: %[[IN0:.*]] = tosa.slice %arg0
 // CHECK: %[[FI0:.*]] = tosa.slice %arg1
 // CHECK: %[[BI0:.*]] = tosa.slice %arg2
@@ -124,7 +124,7 @@ func.func @bwd_data_conv1d(%arg0: tensor<64xf32>, %arg1: tensor<672xf32>, %arg2:
 // CHECK-LABEL: func @bwd_data_conv2d_empty_slice
 // CHECK-NOT: tosa.custom
 // CHECK-NOT: tosa.slice
-// CHECK: %[[Z:.*]] = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1x2x4x1xf32>}> : () -> tensor<1x2x4x1xf32>
+// CHECK: %[[Z:.*]] = tosa.const values(dense<0.000000e+00> : tensor<1x2x4x1xf32>) : () -> tensor<1x2x4x1xf32>
 // CHECK: tosa.add %[[Z]], %{{.*}} : (tensor<1x2x4x1xf32>, tensor<1x1x1x1xf32>) -> tensor<1x2x4x1xf32>
 func.func @bwd_data_conv2d_empty_slice(%grad_out: tensor<1x1x4x1xf32>, %weight: tensor<1x4x1x1xf32>) -> tensor<1x2x4x1xf32> {
   %izp = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>

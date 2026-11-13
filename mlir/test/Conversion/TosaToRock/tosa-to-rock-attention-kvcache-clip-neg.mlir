@@ -8,7 +8,7 @@
 // on the lastValidKVIndex operand, so the pattern must retain %clip_min in the
 // elementwise region, where it exercises the dense-constant input path.
 // CHECK-LABEL: func @kvcache_nonsplat_clip_bound
-// CHECK: %[[CLIP_MIN:.*]] = "tosa.const"() <{values = dense<{{.*0.*1.*}}> : tensor<1x2x1x1xi32>}>
+// CHECK: %[[CLIP_MIN:.*]] = tosa.const values(dense<{{.*0.*1.*}}> : tensor<1x2x1x1xi32>)
 // CHECK: rock.attention
 // The retained dense non-splat constant is an elementwise input so downstream
 // Rock lowering can tile-load it from compiler-owned GPU storage.

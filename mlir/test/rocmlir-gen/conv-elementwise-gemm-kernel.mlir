@@ -22,7 +22,7 @@
 // CHECK: return
 
 // CHECK-LABEL: func.func @host_naive_conv_gemm
-// CHECK: %[[convTensor:.*]] = tosa.conv2d %[[inputTensor:.*]], %[[filterTensor:.*]], %{{.*}}, %{{.*}}, %{{.*}} pad([0, 0, 0, 0]) stride([1, 1]) dilation([1, 1]) acc_type(f32) : (tensor<2x32x32x256xf32>, tensor<128x1x1x256xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x128xf32>
+// CHECK: %[[convTensor:.*]] = tosa.conv2d %[[inputTensor:.*]], %[[filterTensor:.*]], %{{.*}}, %{{.*}}, %{{.*}} pad([0, 0, 0, 0]) stride([1, 1]) dilation([1, 1]) acc_type(f32) local_bound(false) : (tensor<2x32x32x256xf32>, tensor<128x1x1x256xf32>, tensor<128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x128xf32>
 // CHECK-DAG: %[[abTensor:.*]] = tosa.reshape %[[convTensor]], %{{.*}} : (tensor<2x32x32x128xf32>, !tosa.shape<3>) -> tensor<1x2048x128xf32>
 // CHECK-DAG: %[[resultTensor:.*]] = tosa.matmul %[[abTensor]], %[[cTensor:.*]], %{{.*}}, %{{.*}} {acc_type = f32} : (tensor<1x2048x128xf32>, tensor<1x128x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2048x128xf32>
 // CHECK: return

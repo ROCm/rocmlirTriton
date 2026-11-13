@@ -11,15 +11,15 @@
 // This mirrors the MIGraphX skip-benchmarking path expectation that front()
 // should be directly usable.
 //
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-NT
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=false -transB=false --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-NT
 // RUN: echo -n '--perf_config=' > %t.pcfg.txt
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False --emit-tuning-space=quick | sed -n '1p' >> %t.pcfg.txt
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=False -transB=False @%t.pcfg.txt | rocmlir-driver -c -o /dev/null
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=false -transB=false --emit-tuning-space=quick | sed -n '1p' >> %t.pcfg.txt
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f16 -out_datatype f32 -g 1 -m 256 -k 128 -n 256 -transA=false -transB=false @%t.pcfg.txt | rocmlir-driver -c -o /dev/null
 //
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=True -transB=False --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-TA
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=true -transB=false --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-GEMM-TA
 // RUN: echo -n '--perf_config=' > %t.pcfg.txt
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=True -transB=False --emit-tuning-space=quick | sed -n '1p' >> %t.pcfg.txt
-// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=True -transB=False @%t.pcfg.txt | rocmlir-driver -c -o /dev/null
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=true -transB=false --emit-tuning-space=quick | sed -n '1p' >> %t.pcfg.txt
+// RUN: rocmlir-gen --arch %arch --operation gemm -t f32 -g 1 -m 384 -k 192 -n 128 -transA=true -transB=false @%t.pcfg.txt | rocmlir-driver -c -o /dev/null
 //
 // RUN: rocmlir-gen --arch %arch --operation attention -t f16 -g 1 -head_dim_qk 64 -head_dim_v 64 -num_heads_q 32 -num_heads_kv 32 -seq_len_q 256 -seq_len_k 256 --emit-tuning-space=quick | FileCheck %s --check-prefix=CHECK-ATTN
 // RUN: echo -n '--perf_config=' > %t.pcfg.txt

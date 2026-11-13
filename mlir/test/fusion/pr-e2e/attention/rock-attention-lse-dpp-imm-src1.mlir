@@ -21,7 +21,7 @@
 // the tile is pinned so this reproducer stays independent of the tuning list.
 // An f16 softmax (v_add_f16) and the LSE output are both required to trigger it.
 
-// RUN: rocmlir-gen --arch %arch --operation attention -t f16 --softmax_dtype f16 -g 2 -seq_len_q 5 -seq_len_k 5 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 64 -head_dim_v 64 -with-attn-scale=False -with-attn-bias=True -transQ=False -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=1 --perf_config=attn:v1:64,32,64,1,1,4,0,1,2,0,0 -pv \
+// RUN: rocmlir-gen --arch %arch --operation attention -t f16 --softmax_dtype f16 -g 2 -seq_len_q 5 -seq_len_k 5 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 64 -head_dim_v 64 -with-attn-scale=false -with-attn-bias=true -transQ=false -transK=true -transV=false -transO=false -causal=false -return_lse=true -split_kv=1 --perf_config=attn:v1:64,32,64,1,1,4,0,1,2,0,0 -pv \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
 // RUN: | rocm-run \

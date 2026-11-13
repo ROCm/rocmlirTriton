@@ -47,8 +47,8 @@
 // comes from the broadcast row index, so it is a full tensor rather than a
 // 1x1x1 scalar, and it moves with the query.
 // CHECK: %[[ROWS:.*]] = tosa.mul %{{.*}}, %{{.*}} : (tensor<1x128x1xi32>, tensor<1x128x128xi32>, tensor<1xi8>) -> tensor<1x128x128xi32>
-// CHECK: %[[L:.*]] = "tosa.const"() <{values = dense<32> : tensor<1x1x1xi32>}> : () -> tensor<1x1x1xi32>
-// CHECK: %[[ZERO:.*]] = "tosa.const"() <{values = dense<0> : tensor<1x1x1xi32>}> : () -> tensor<1x1x1xi32>
+// CHECK: %[[L:.*]] = tosa.const values(dense<32> : tensor<1x1x1xi32>) : () -> tensor<1x1x1xi32>
+// CHECK: %[[ZERO:.*]] = tosa.const values(dense<0> : tensor<1x1x1xi32>) : () -> tensor<1x1x1xi32>
 // CHECK: %[[RAW_LB:.*]] = tosa.sub %[[ROWS]], %[[L]] : (tensor<1x128x128xi32>, tensor<1x1x1xi32>) -> tensor<1x128x128xi32>
 // CHECK: %[[LB:.*]] = tosa.maximum %[[RAW_LB]], %[[ZERO]] : (tensor<1x128x128xi32>, tensor<1x1x1xi32>) -> tensor<1x128x128xi32>
 // CHECK: %[[TOO_OLD:.*]] = tosa.greater %[[LB]], %{{.*}} : (tensor<1x128x128xi32>, tensor<1x128x128xi32>) -> tensor<1x128x128xi1>
@@ -57,12 +57,12 @@
 // A narrow band can leave a row with every key masked on some tile, so the
 // reference normalizes with a finite max and a denominator clamped at 1.
 // CHECK: %[[MAX:.*]] = tosa.reduce_max
-// CHECK: %[[LOWEST:.*]] = "tosa.const"() <{values = dense<-3.40282347E+38> : tensor<1x128x1xf32>}> : () -> tensor<1x128x1xf32>
+// CHECK: %[[LOWEST:.*]] = tosa.const values(dense<-3.40282347E+38> : tensor<1x128x1xf32>) : () -> tensor<1x128x1xf32>
 // CHECK: %[[SAFE_MAX:.*]] = tosa.maximum %[[MAX]], %[[LOWEST]]
 // CHECK: tosa.sub %{{.*}}, %[[SAFE_MAX]]
 // CHECK: tosa.exp
 // CHECK: %[[SUM:.*]] = tosa.reduce_sum
-// CHECK: %[[ONE:.*]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<1x128x1xf32>}> : () -> tensor<1x128x1xf32>
+// CHECK: %[[ONE:.*]] = tosa.const values(dense<1.000000e+00> : tensor<1x128x1xf32>) : () -> tensor<1x128x1xf32>
 // CHECK: %[[SAFE_SUM:.*]] = tosa.maximum %[[SUM]], %[[ONE]]
 // CHECK: tosa.reciprocal %[[SAFE_SUM]]
 // CHECK: tosa.matmul

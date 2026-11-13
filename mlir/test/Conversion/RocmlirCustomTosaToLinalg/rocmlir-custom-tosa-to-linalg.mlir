@@ -160,7 +160,7 @@ func.func @fp_to_int_cast_f16_to_i8(%arg0: tensor<16xf16>) -> tensor<16xi8> {
 // CHECK-LABEL: @matmul_acc_promotion_basic
 // CHECK: %[[MATMUL:.+]] = tosa.matmul
 // CHECK-SAME: -> tensor<1x4x4xf32>
-// CHECK: %[[CAST:.+]] = tosa.cast %[[MATMUL]] : (tensor<1x4x4xf32>) -> tensor<1x4x4xf16>
+// CHECK: %[[CAST:.+]] = tosa.cast %[[MATMUL]] input_unsigned(false) : (tensor<1x4x4xf32>) -> tensor<1x4x4xf16>
 // CHECK: return %[[CAST]]
 func.func @matmul_acc_promotion_basic(%arg0: tensor<1x4x8xf16>, %arg1: tensor<1x8x4xf16>) -> tensor<1x4x4xf16> {
   %a_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf16>}> : () -> tensor<1xf16>

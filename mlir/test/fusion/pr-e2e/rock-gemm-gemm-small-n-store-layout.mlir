@@ -8,7 +8,7 @@
 
 // RUN: rocmlir-gen -pv --operation gemm_gemm \
 // RUN:   -t bf16 --arch %arch -g 2 -m 61 -k 39 -n 92 -gemmO 5 \
-// RUN:   -transA=True -transB=True -transC=True -transO=False \
+// RUN:   -transA=true -transB=true -transC=true -transO=false \
 // RUN:   --perf_config="attn:v1:128,256,16,1,1,1,32,1,3,4,8" \
 // RUN: | rocmlir-driver --host-pipeline=highlevel - \
 // RUN: | rocmlir-driver -c \

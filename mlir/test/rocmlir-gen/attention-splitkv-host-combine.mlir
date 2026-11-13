@@ -10,11 +10,11 @@
 
 // LSE re-normalization across the splitKV axis (axis = 1).
 // CHECK: %[[MAX:.+]] = tosa.reduce_max %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
-// CHECK: %[[LOWEST:.+]] = "tosa.const"() <{values = dense<-3.40282347E+38> : tensor<4x1x1x1xf32>}> : () -> tensor<4x1x1x1xf32>
+// CHECK: %[[LOWEST:.+]] = tosa.const values(dense<-3.40282347E+38> : tensor<4x1x1x1xf32>) : () -> tensor<4x1x1x1xf32>
 // CHECK: %[[SAFE_MAX:.+]] = tosa.maximum %[[MAX]], %[[LOWEST]] : (tensor<4x1x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: tosa.sub %{{.+}}, %[[SAFE_MAX]] : (tensor<4x8x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x8x1x1xf32>
 // CHECK: tosa.exp %{{.+}} : (tensor<4x8x1x1xf32>) -> tensor<4x8x1x1xf32>
 // CHECK: %[[SUM:.+]] = tosa.reduce_sum %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
-// CHECK: %[[ONE:.+]] = "tosa.const"() <{values = dense<1.000000e+00> : tensor<4x1x1x1xf32>}> : () -> tensor<4x1x1x1xf32>
+// CHECK: %[[ONE:.+]] = tosa.const values(dense<1.000000e+00> : tensor<4x1x1x1xf32>) : () -> tensor<4x1x1x1xf32>
 // CHECK: %[[SAFE_SUM:.+]] = tosa.maximum %[[SUM]], %[[ONE]] : (tensor<4x1x1x1xf32>, tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>
 // CHECK: tosa.reciprocal %[[SAFE_SUM]] : (tensor<4x1x1x1xf32>) -> tensor<4x1x1x1xf32>

@@ -6,7 +6,7 @@
 // CHECK-LABEL: @migraphx_literal_dense_ui8()
 // CHECK-SAME: -> tensor<4xi8> {
 func.func @migraphx_literal_dense_ui8() -> !migraphx.shaped<4xui8, 1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<[23, 28, 19, 20]> : tensor<4xi8>}> : () -> tensor<4xi8>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<[23, 28, 19, 20]> : tensor<4xi8>) : () -> tensor<4xi8>
   // CHECK-NEXT: return %[[const]] : tensor<4xi8>
   %0 = migraphx.literal (dense<[23, 28, 19, 20]> : tensor<4xui8>) : <4xui8, 1>
   return %0 : !migraphx.shaped<4xui8, 1>
@@ -15,7 +15,7 @@ func.func @migraphx_literal_dense_ui8() -> !migraphx.shaped<4xui8, 1> {
 // CHECK-LABEL: @migraphx_literal_dense_si8()
 // CHECK-SAME: -> tensor<4xi8> {
 func.func @migraphx_literal_dense_si8() -> !migraphx.shaped<4xsi8, 1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<[-23, 28, -19, 20]> : tensor<4xi8>}> : () -> tensor<4xi8>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<[-23, 28, -19, 20]> : tensor<4xi8>) : () -> tensor<4xi8>
   // CHECK-NEXT: return %[[const]] : tensor<4xi8>
   %0 = migraphx.literal (dense<[-23, 28, -19, 20]> : tensor<4xsi8>) : <4xsi8, 1>
   return %0 : !migraphx.shaped<4xsi8, 1>
@@ -24,7 +24,7 @@ func.func @migraphx_literal_dense_si8() -> !migraphx.shaped<4xsi8, 1> {
 // CHECK-LABEL: @migraphx_literal_dense_i8()
 // CHECK-SAME: -> tensor<4xi8> {
 func.func @migraphx_literal_dense_i8() -> !migraphx.shaped<4xi8, 1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<[-23, 28, -19, 20]> : tensor<4xi8>}> : () -> tensor<4xi8>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<[-23, 28, -19, 20]> : tensor<4xi8>) : () -> tensor<4xi8>
   // CHECK-NEXT: return %[[const]] : tensor<4xi8>
   %0 = migraphx.literal (dense<[-23, 28, -19, 20]> : tensor<4xi8>) : <4xi8, 1>
   return %0 : !migraphx.shaped<4xi8, 1>
@@ -33,7 +33,7 @@ func.func @migraphx_literal_dense_i8() -> !migraphx.shaped<4xi8, 1> {
 // CHECK-LABEL: @migraphx_literal_dense_f16()
 // CHECK-SAME: -> tensor<4xf16> {
 func.func @migraphx_literal_dense_f16() -> !migraphx.shaped<4xf16, 1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<[-2.300000e+01, 2.800000e+01, -1.900000e+01, 2.000000e+01]> : tensor<4xf16>}> : () -> tensor<4xf16>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<[-2.300000e+01, 2.800000e+01, -1.900000e+01, 2.000000e+01]> : tensor<4xf16>) : () -> tensor<4xf16>
   // CHECK-NEXT: return %[[const]] : tensor<4xf16>
   %0 = migraphx.literal (dense<[-23.0, 28.0, -19.0, 20.0]> : tensor<4xf16>) : <4xf16, 1>
   return %0 : !migraphx.shaped<4xf16, 1>
@@ -42,7 +42,7 @@ func.func @migraphx_literal_dense_f16() -> !migraphx.shaped<4xf16, 1> {
 // CHECK-LABEL: @migraphx_literal_dense_f32()
 // CHECK-SAME: -> tensor<4xf32> {
 func.func @migraphx_literal_dense_f32() -> !migraphx.shaped<4xf32, 1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<[-2.300000e+01, 2.800000e+01, -1.900000e+01, 2.000000e+01]> : tensor<4xf32>}> : () -> tensor<4xf32>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<[-2.300000e+01, 2.800000e+01, -1.900000e+01, 2.000000e+01]> : tensor<4xf32>) : () -> tensor<4xf32>
   // CHECK-NEXT: return %[[const]] : tensor<4xf32>
   %0 = migraphx.literal (dense<[-23.0, 28.0, -19.0, 20.0]> : tensor<4xf32>) : <4xf32, 1>
   return %0 : !migraphx.shaped<4xf32, 1>
@@ -51,7 +51,7 @@ func.func @migraphx_literal_dense_f32() -> !migraphx.shaped<4xf32, 1> {
 // CHECK-LABEL: @migraphx_literal_zero()
 // CHECK-SAME: -> tensor<9408xi8> {
 func.func @migraphx_literal_zero() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<0> : tensor<64x3x7x7xi8>}> : () -> tensor<64x3x7x7xi8>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<0> : tensor<64x3x7x7xi8>) : () -> tensor<64x3x7x7xi8>
   // CHECK: %[[constshape:.+]] = tosa.const_shape  values(dense<9408> : tensor<1xindex>) : () -> !tosa.shape<1>
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xi8>, !tosa.shape<1>) -> tensor<9408xi8>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xi8>
@@ -62,7 +62,7 @@ func.func @migraphx_literal_zero() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1>
 // CHECK-LABEL: @migraphx_literal_negative()
 // CHECK-SAME: -> tensor<9408xi8> {
 func.func @migraphx_literal_negative() -> !migraphx.shaped<64x3x7x7xsi8, 147x49x7x1> {
-  // CHECK: %[[const:.+]] = "tosa.const"() <{values = dense<-1> : tensor<64x3x7x7xi8>}> : () -> tensor<64x3x7x7xi8>
+  // CHECK: %[[const:.+]] = tosa.const values(dense<-1> : tensor<64x3x7x7xi8>) : () -> tensor<64x3x7x7xi8>
   // CHECK: %[[constshape:.+]] = tosa.const_shape  values(dense<9408> : tensor<1xindex>) : () -> !tosa.shape<1>
   // CHECK-NEXT: %[[reshape:.+]] = tosa.reshape %[[const]], %[[constshape]] : (tensor<64x3x7x7xi8>, !tosa.shape<1>) -> tensor<9408xi8>
   // CHECK-NEXT: return %[[reshape]] : tensor<9408xi8>

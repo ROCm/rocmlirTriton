@@ -53,8 +53,8 @@ func.func @mlir_attention(%arg0: tensor<12288xf16>, %arg1: tensor<4194304xf16>, 
 // -----
 
 // CHECK-LABEL: func @mlir_attention_clipped
-// CHECK-DAG: %[[UPPER:.*]] = "tosa.const"() <{values = dense<1023> : tensor<32xi32>}> : () -> tensor<32xi32>
-// CHECK-DAG: %[[LOWER:.*]] = "tosa.const"() <{values = dense<16> : tensor<32xi32>}> : () -> tensor<32xi32>
+// CHECK-DAG: %[[UPPER:.*]] = tosa.const values(dense<1023> : tensor<32xi32>) : () -> tensor<32xi32>
+// CHECK-DAG: %[[LOWER:.*]] = tosa.const values(dense<16> : tensor<32xi32>) : () -> tensor<32xi32>
 // CHECK: %[[HEAD_BROADCAST:.*]] = rock.transform %arg3 {{.*}} : tensor<1x1xi32> to tensor<1x32xi32>
 // CHECK: %[[FLAT:.*]] = tensor.collapse_shape %[[HEAD_BROADCAST]]
 // CHECK: %[[MAX:.*]] = tosa.maximum %[[FLAT]], %[[LOWER]] : (tensor<32xi32>, tensor<32xi32>) -> tensor<32xi32>

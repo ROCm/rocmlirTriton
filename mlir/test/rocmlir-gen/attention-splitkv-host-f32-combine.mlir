@@ -23,8 +23,8 @@
 // CHECK: tosa.reshape %{{.+}} : (tensor<32xf16>, !tosa.shape<4>) -> tensor<4x8x1x1xf16>
 
 // f16 storage is upcast to f32 before the combine.
-// CHECK: tosa.cast %{{.+}} : (tensor<4x8x1x32xf16>) -> tensor<4x8x1x32xf32>
-// CHECK: tosa.cast %{{.+}} : (tensor<4x8x1x1xf16>) -> tensor<4x8x1x1xf32>
+// CHECK: tosa.cast %{{.+}} input_unsigned(false) : (tensor<4x8x1x32xf16>) -> tensor<4x8x1x32xf32>
+// CHECK: tosa.cast %{{.+}} input_unsigned(false) : (tensor<4x8x1x1xf16>) -> tensor<4x8x1x1xf32>
 
 // LSE re-normalization across the splitKV axis (axis = 1), entirely in f32.
 // CHECK: %[[mx:.+]] = tosa.reduce_max %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
@@ -39,10 +39,10 @@
 // CHECK: tosa.reduce_sum %{{.+}} axis(1) : (tensor<4x8x1x32xf32>) -> tensor<4x1x1x32xf32>
 
 // Only the final combined result is cast back to the f16 storage type.
-// CHECK: tosa.cast %{{.+}} : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xf16>
+// CHECK: tosa.cast %{{.+}} input_unsigned(false) : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xf16>
 
 // BF16-LABEL: func.func @rock_attention_gpu
 // BF16: tosa.reshape %{{.+}} : (tensor<1024xbf16>, !tosa.shape<4>) -> tensor<4x8x1x32xbf16>
-// BF16: tosa.cast %{{.+}} : (tensor<4x8x1x32xbf16>) -> tensor<4x8x1x32xf32>
+// BF16: tosa.cast %{{.+}} input_unsigned(false) : (tensor<4x8x1x32xbf16>) -> tensor<4x8x1x32xf32>
 // BF16: tosa.reduce_max %{{.+}} axis(1) : (tensor<4x8x1x1xf32>) -> tensor<4x1x1x1xf32>
-// BF16: tosa.cast %{{.+}} : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xbf16>
+// BF16: tosa.cast %{{.+}} input_unsigned(false) : (tensor<4x1x1x32xf32>) -> tensor<4x1x1x32xbf16>

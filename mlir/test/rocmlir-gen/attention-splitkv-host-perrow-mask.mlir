@@ -32,21 +32,21 @@
 // CHECK: tosa.reshape %{{.+}} : (tensor<512xf16>, !tosa.shape<4>) -> tensor<1x4x4x32xf16>
 
 // f16 storage upcast to f32 for the combine.
-// CHECK: tosa.cast %{{.+}} : (tensor<1x4x4x32xf16>) -> tensor<1x4x4x32xf32>
+// CHECK: tosa.cast %{{.+}} input_unsigned(false) : (tensor<1x4x4x32xf16>) -> tensor<1x4x4x32xf32>
 
 // Per-row validity counts: laid out along the query-row axis ([batch, 1, seqQ, 1]),
 // i.e. tensor<1x1x4x1xi32>, NOT the per-batch-head tensor<Nx1x1x1xi32> layout.
-// CHECK: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
+// CHECK: tosa.const values(dense<1> : tensor<1x1x4x1xi32>)
 // CHECK: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
 
 // LSE re-normalization across the splitKV axis (axis = 1) in f32.
 // CHECK: tosa.reduce_max %{{.+}} axis(1) : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
 
 // Final combined result cast back to f16 storage.
-// CHECK: tosa.cast %{{.+}} : (tensor<1x1x4x32xf32>) -> tensor<1x1x4x32xf16>
+// CHECK: tosa.cast %{{.+}} input_unsigned(false) : (tensor<1x1x4x32xf32>) -> tensor<1x1x4x32xf16>
 
 // PREFIX-LABEL: func.func @rock_attention_gpu
-// PREFIX: "tosa.const"() <{values = dense<1> : tensor<1x1x4x1xi32>}>
+// PREFIX: tosa.const values(dense<1> : tensor<1x1x4x1xi32>)
 // PREFIX: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x4x4x1xi32>, tensor<1x4x4x1xi32>) -> tensor<1x4x4x1xi1>
 // PREFIX: tosa.reduce_max %{{.+}} axis(1) : (tensor<1x4x4x1xf32>) -> tensor<1x1x4x1xf32>
 
@@ -54,12 +54,12 @@
 // rows' last visible keys (62..65) on both sides of the split boundary at key
 // 64, so the counts differ per row.
 // STRADDLE-LABEL: func.func @rock_attention_gpu
-// STRADDLE: "tosa.const"() <{values = dense<{{\[\[\[\[}}2], [2], [3], [3]]]]> : tensor<1x1x4x1xi32>}>
+// STRADDLE: tosa.const values(dense<{{\[\[\[\[}}2], [2], [3], [3]]]]> : tensor<1x1x4x1xi32>)
 
 // Causal with seq_len_q (96) above the 32-key tile, which rocmlir-gen used to
 // reject. Rows 64..95 span 3 key tiles over 2 splits, so their splits hold 64
 // keys each and their count is 2, not 3. Expected counts: 1 for rows 0..31,
 // 2 for rows 32..95.
 // MULTITILE-LABEL: func.func @rock_attention_gpu
-// MULTITILE: "tosa.const"() <{values = dense<{{\[\[\[\[1\](, \[1\]){31}(, \[2\]){64}\]\]\]}}> : tensor<1x1x96x1xi32>}>
+// MULTITILE: tosa.const values(dense<{{\[\[\[\[1\](, \[1\]){31}(, \[2\]){64}\]\]\]}}> : tensor<1x1x96x1xi32>)
 // MULTITILE: tosa.greater_equal %{{.+}}, %{{.+}} : (tensor<1x2x96x1xi32>, tensor<1x2x96x1xi32>) -> tensor<1x2x96x1xi1>

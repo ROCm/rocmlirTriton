@@ -39,4 +39,4 @@
 // CHECK_I8_CPU_FMA_REF-NEXT: %[[BIAS_F32:.*]] = tosa.cast {{.*}} : (tensor<1x16x16xf16>) -> tensor<1x16x16xf32>
 // CHECK_I8_CPU_FMA_REF:      %[[SCALED_F32:.*]] = tosa.mul %[[SCORE_F32]], %[[SCALE_F32]]
 // CHECK_I8_CPU_FMA_REF-NEXT: %[[BIASED_F32:.*]] = tosa.add %[[SCALED_F32]], %[[BIAS_F32]] : (tensor<1x16x16xf32>, tensor<1x16x16xf32>) -> tensor<1x16x16xf32>
-// CHECK_I8_CPU_FMA_REF-NEXT: tosa.cast %[[BIASED_F32]] : (tensor<1x16x16xf32>) -> tensor<1x16x16xf16>
+// CHECK_I8_CPU_FMA_REF-NEXT: tosa.cast %[[BIASED_F32]] input_unsigned(false) : (tensor<1x16x16xf32>) -> tensor<1x16x16xf16>
