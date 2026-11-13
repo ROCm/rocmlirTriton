@@ -366,9 +366,9 @@ source on every bump:
 
 | Rock copy | Upstream source | What to check |
 |-----------|-----------------|---------------|
-| `kOcmlTanhF32` / `kOcmlTanhF64` in `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` | `tanh()` in `external/triton/third_party/amd/language/hip/libdevice.py` | Symbol strings must match, and the dtype split must stay f32/f64 (the pass computes anything narrower than f32 at f32). `kOcmlTanhF32` must also stay in sync with the `calleeName == "__ocml_tanh_f32"` match in `third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp`, which is what turns the call into `llvm.amdgcn.tanh.f32`. |
+| `kOcmlTanhF32` / `kOcmlTanhF64` / `kTritonFastTanhF32` in `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` | `tanh()` and `fast_tanhf()` in `external/triton/third_party/amd/language/hip/libdevice.py` | Symbol strings must match, and the dtype split must stay f32/f64 (the pass computes anything narrower than f32 at f32). The two f32 spellings are not interchangeable: `kTritonFastTanhF32` must stay in sync with the `calleeName == "__triton_hip_fast_tanhf"` match in `third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp`, which is what turns the call into `llvm.amdgcn.tanh.f32` on the families gated below *and expands it inline everywhere else*, while `kOcmlTanhF32` must stay a symbol that file does **not** match, so that `--disable-fast-math` keeps getting the real library body from the `ocml.bc` link. Swapping one for the other still builds and runs: `mlir/test/rocmlir-driver/tanh-isa.mlir` is what catches it, through the `NATIVE` checks one way and the `OCML` checks the other. |
 | `kOcmlPowF32` / `kOcmlPowF64` | `pow()` in the same file | Symbol strings and the same f32/f64 split. The `__ocml_pown_*` integer-exponent entries are deliberately not mirrored: the pass only lowers `math.powf`, whose exponent is a float. |
-| `tritonLowersTanhToNativeInst()` in `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` | the `getISAFamily() == ISAFamily::CDNA5` (historically `GFX1250`) guard on the `__ocml_tanh_f32` branch of `BuiltinFuncToLLVM.cpp` | The set of families Triton rewrites on. Note this is deliberately *not* LLVM's `FeatureTanhInsts`, which is wider: LLVM gives gfx13 `v_tanh_f32` but Triton does not rewrite there, so querying the LLVM feature would pick a full OCML library call believing it to be one instruction. If upstream widens the guard to a feature check or to more families, widen the switch to match; the point of choosing the call on these targets is that it stops being a call. |
+| `tritonLowersTanhToNativeInst()` in `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` | the `getISAFamily() == ISAFamily::CDNA5` (historically `GFX1250`) guard on the `__triton_hip_fast_tanhf` branch of `BuiltinFuncToLLVM.cpp` | The set of families Triton rewrites on. Note this is deliberately *not* LLVM's `FeatureTanhInsts`, which is wider: LLVM gives gfx13 `v_tanh_f32` but Triton does not rewrite there, so querying the LLVM feature would pick a full OCML library call believing it to be one instruction. If upstream widens the guard to a feature check or to more families, widen the switch to match; the point of choosing the call on these targets is that it stops being a call. |
 
 ```bash
 git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
@@ -383,6 +383,13 @@ the same copies:
 the reference stays unresolved until the `ocml.bc` link in `TritonToHsaco`, so it
 surfaces as a link failure there or, for the gfx1250 / CDNA5 rewrite above, as a silent
 loss of `v_tanh_f32` that `mlir/test/rocmlir-driver/tanh-isa.mlir` catches.
+
+The 2026-11 bump is the worked example: the rewrite moved off `__ocml_tanh_f32`
+onto `__triton_hip_fast_tanhf`, so gfx1250 quietly stopped emitting
+`v_tanh_f32`. Renaming `kOcmlTanhF32` to follow it fixes that and breaks the
+other direction, because the fast spelling expands inline on targets without
+the instruction and `--disable-fast-math` stops reaching OCML at all; hence the
+two separate constants.
 
 A moved gate is quieter still, since both sides keep compiling and the call is
 valid either way. The one thing that does speak up is a bump adding an

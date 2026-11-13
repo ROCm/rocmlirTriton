@@ -525,7 +525,7 @@ TEST(AmdArchDbTest, SupportsTDM) {
 
 // --- tritonLowersTanhToNativeInst ---
 //
-// Mirrors the GFX1250 gate on the __ocml_tanh_f32 rewrite in Triton's
+// Mirrors the GFX1250 gate on the __triton_hip_fast_tanhf rewrite in Triton's
 // BuiltinFuncToLLVM.cpp, which is narrower than LLVM's FeatureTanhInsts.
 
 TEST(AmdArchDbTest, TritonLowersTanhToNativeInst) {
