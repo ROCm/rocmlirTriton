@@ -36,13 +36,13 @@ func.func @tanh_f32(%arg0: tensor<64x64xf32>) -> tensor<64x64xf32> attributes {r
 }
 
 // ============================================================
-// tanh on a target with v_tanh_f32 (gfx1250): the OCML call lowers to the
+// tanh on a target with v_tanh_f32 (gfx1250): the fast-tanh call lowers to the
 // single hardware instruction, so it beats both the expansion and the
 // approximation and wins even under fast math.
 // ============================================================
 
 // CHECK-LABEL: func.func @tanh_f32_gfx1250
-// CHECK: tt.extern_elementwise %{{.*}} {libname = "", libpath = "", pure = true, symbol = "__ocml_tanh_f32"} : (tensor<64x64xf32>) -> tensor<64x64xf32>
+// CHECK: tt.extern_elementwise %{{.*}} {libname = "", libpath = "", pure = true, symbol = "__triton_hip_fast_tanhf"} : (tensor<64x64xf32>) -> tensor<64x64xf32>
 // CHECK-NOT: math.exp
 func.func @tanh_f32_gfx1250(%arg0: tensor<64x64xf32>) -> tensor<64x64xf32> attributes {rock.arch = "gfx1250", rock.kernel} {
   %0 = math.tanh %arg0 : tensor<64x64xf32>
@@ -249,11 +249,11 @@ func.func @tanh_f4E2M1FN(%arg0: tensor<64xf4E2M1FN>) -> tensor<64xf4E2M1FN> attr
 }
 
 // A native v_tanh_f32 wins for the narrow types too: there is no f8 tanh
-// instruction, so the widening has to happen either way and the OCML call the
-// backend rewrites into the hardware one costs nothing extra.
+// instruction, so the widening has to happen either way and the fast-tanh call
+// the backend rewrites into the hardware one costs nothing extra.
 // CHECK-LABEL: func.func @tanh_f8_gfx1250
 // CHECK: %[[EXT:.*]] = arith.extf %{{.*}} : tensor<64xf8E4M3FN> to tensor<64xf32>
-// CHECK: %[[CALL:.*]] = tt.extern_elementwise %[[EXT]] {{.*}} symbol = "__ocml_tanh_f32"
+// CHECK: %[[CALL:.*]] = tt.extern_elementwise %[[EXT]] {{.*}} symbol = "__triton_hip_fast_tanhf"
 // CHECK: arith.truncf %[[CALL]] : tensor<64xf32> to tensor<64xf8E4M3FN>
 // CHECK-NOT: math.exp2
 func.func @tanh_f8_gfx1250(%arg0: tensor<64xf8E4M3FN>) -> tensor<64xf8E4M3FN> attributes {rock.arch = "gfx1250", rock.kernel} {
