@@ -9,7 +9,7 @@
 module {
   // add -> transform(reshape) -> reduce_sum
   // CHECK-LABEL: func.func @transform_reduce
-  func.func @transform_reduce(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.reduce} {
+  func.func @transform_reduce(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.nongemm} {
     %add = arith.addf %arg0, %arg1 : tensor<3x4xf32>
     %flat = rock.transform %add by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
     %reduced = rock.reduce sum %flat {axis = 0 : index} : tensor<12xf32> -> tensor<1xf32>
@@ -21,7 +21,7 @@ module {
 
   // add -> mul -> transform(reshape) -> reduce_sum
   // CHECK-LABEL: func.func @pre_reduce_two_elementwise_then_transform
-  func.func @pre_reduce_two_elementwise_then_transform(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.reduce} {
+  func.func @pre_reduce_two_elementwise_then_transform(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.nongemm} {
     %add = arith.addf %arg0, %arg1 : tensor<3x4xf32>
     %mul = arith.mulf %add, %arg2 : tensor<3x4xf32>
     %flat = rock.transform %mul by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
@@ -36,7 +36,7 @@ module {
 
   // add(f16) -> extf(f32) -> transform(reshape) -> reduce_sum
   // CHECK-LABEL: func.func @transform_reduce_with_extf
-  func.func @transform_reduce_with_extf(%arg0: tensor<3x4xf16>, %arg1: tensor<3x4xf16>) -> tensor<1xf32> attributes {rock.kernel, rock.reduce} {
+  func.func @transform_reduce_with_extf(%arg0: tensor<3x4xf16>, %arg1: tensor<3x4xf16>) -> tensor<1xf32> attributes {rock.kernel, rock.nongemm} {
     %add = arith.addf %arg0, %arg1 : tensor<3x4xf16>
     %ext = arith.extf %add : tensor<3x4xf16> to tensor<3x4xf32>
     %flat = rock.transform %ext by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
@@ -50,7 +50,7 @@ module {
 
 
   // CHECK-LABEL: func.func @elementwise_multi_use
-  func.func @elementwise_multi_use(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.reduce} {
+  func.func @elementwise_multi_use(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<3x4xf32>) -> tensor<1xf32> attributes {rock.kernel, rock.nongemm} {
     %add = arith.addf %arg0, %arg1 : tensor<3x4xf32>
     %flat = rock.transform %add by #tf_merge_3x4_to_12 : tensor<3x4xf32> to tensor<12xf32>
     %mul = arith.mulf %add, %arg2 : tensor<3x4xf32>

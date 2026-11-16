@@ -1,5 +1,16 @@
 # Standalone reduce kernel pipeline
 
+> **Superseded in progress.** The elementwise and reduce kernels are being
+> unified into one *nongemm* kernel type. Stage 1 has landed: the markers
+> `rock.elementwise` and `rock.reduce` are replaced by the single
+> `rock.nongemm`, the schedule moved off the `rock.reduce` op onto the
+> function as `rock.nongemm_params<rowsPerBlock, colsPerBlock, numWaves,
+> numStages>`, and the shared helpers live in
+> `lib/Dialect/Rock/Transforms/NonGemmUtils.{h,cpp}`. Which of the two
+> lowering paths runs is now decided by whether the kernel contains a
+> `rock.reduce`, not by a marker. Both documents will be replaced by
+> `docs/nongemm-kernel-pipeline.md` once the passes and pipelines are merged.
+
 Living plan for the dedicated lowering path for standalone `reduce_sum`
 kernels. Supersedes the exploratory notes in
 `reduce-kernel-plan-session-notes.md`.

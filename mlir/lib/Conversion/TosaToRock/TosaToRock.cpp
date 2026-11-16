@@ -3562,8 +3562,7 @@ typename std::enable_if_t<
 
   auto rockReduce = rock::ReduceOp::create(
       rw, loc, op.getInput(), rw.getAttr<rock::ReduceMethodAttr>(rMethod),
-      rw.getIndexAttr(op.getAxis()),
-      /*params=*/rock::ReduceParamsAttr{});
+      rw.getIndexAttr(op.getAxis()));
 
   func::FuncOp func = op->template getParentOfType<func::FuncOp>();
   SetVector<int64_t> resIndices = traceToRes(op.getOutput(), func);

@@ -26,7 +26,7 @@
 // CHECK: rock.store_marker %[[RED]] {{.*}}[%[[BID]]] : tensor<1xf32> -> tensor<8xf32>
 // CHECK-NOT: rock.reduce
 func.func @long_rows(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #long_view : tensor<8192xf32> to tensor<8x1024xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #long_drop : tensor<8x1xf32> to tensor<8xf32>
@@ -47,7 +47,7 @@ func.func @long_rows(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf
 // CHECK: rock.load_marker {{.*}} -> tensor<64x16xf32>
 // CHECK: rock.blockwise_reduce sum {{.*}} : tensor<64x16xf32> -> tensor<64xf32>
 func.func @short_rows(%arg0: tensor<65536xf32>, %out: tensor<4096xf32>) -> tensor<4096xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #short_view : tensor<65536xf32> to tensor<4096x16xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<4096x16xf32> -> tensor<4096x1xf32>
   %1 = rock.transform %0 by #short_drop : tensor<4096x1xf32> to tensor<4096xf32>
@@ -66,7 +66,7 @@ func.func @short_rows(%arg0: tensor<65536xf32>, %out: tensor<4096xf32>) -> tenso
 // CHECK-SAME: rock.grid_size = 4 : i32
 // CHECK: rock.load_marker {{.*}} -> tensor<2x1024xf16>
 func.func @half_precision(%arg0: tensor<8192xf16>, %out: tensor<8xf16>) -> tensor<8xf16>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #f16_view : tensor<8192xf16> to tensor<8x1024xf16>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf16> -> tensor<8x1xf16>
   %1 = rock.transform %0 by #f16_drop : tensor<8x1xf16> to tensor<8xf16>
@@ -88,7 +88,7 @@ func.func @half_precision(%arg0: tensor<8192xf16>, %out: tensor<8xf16>) -> tenso
 // CHECK: rock.load_marker {{.*}} -> tensor<2x512xf32>
 // CHECK: rock.blockwise_reduce sum {{.*}} : tensor<2x512xf32> -> tensor<2xf32>
 func.func @padded_both_axes(%arg0: tensor<30000xf32>, %out: tensor<100xf32>) -> tensor<100xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #pad_view : tensor<30000xf32> to tensor<100x300xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<100x300xf32> -> tensor<100x1xf32>
   %1 = rock.transform %0 by #pad_drop : tensor<100x1xf32> to tensor<100xf32>
@@ -108,7 +108,7 @@ func.func @padded_both_axes(%arg0: tensor<30000xf32>, %out: tensor<100xf32>) -> 
 // CHECK: rock.transform {{.*}}Merge{2, 4}
 // CHECK: rock.load_marker {{.*}} -> tensor<2x512xf32>
 func.func @rank3(%arg0: tensor<4096xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #rank3_view : tensor<4096xf32> to tensor<2x4x512xf32>
   %0 = rock.reduce sum %a {axis = 2 : index} : tensor<2x4x512xf32> -> tensor<2x4x1xf32>
   %1 = rock.transform %0 by #rank3_drop : tensor<2x4x1xf32> to tensor<8xf32>
@@ -127,9 +127,10 @@ func.func @rank3(%arg0: tensor<4096xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
 // CHECK-SAME: rock.grid_size = 2 : i32
 // CHECK: rock.load_marker {{.*}} -> tensor<4x1024xf32>
 func.func @pinned_params(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 4, colsPerBlock = 1024, numWaves = 4, numStages = 2>} {
   %a = rock.transform %arg0 by #pinned_view : tensor<8192xf32> to tensor<8x1024xf32>
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 4, colsPerBlock = 1024, numWaves = 4>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #pinned_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
@@ -148,7 +149,7 @@ func.func @pinned_params(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor
 // CHECK: %[[SUM:.*]] = arith.addf {{.*}} : tensor<1x1024xf32>
 // CHECK: rock.blockwise_reduce sum %[[SUM]]
 func.func @pre_reduce_fusion(%arg0: tensor<8192xf32>, %arg1: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #fused_view : tensor<8192xf32> to tensor<8x1024xf32>
   %b = rock.transform %arg1 by #fused_view : tensor<8192xf32> to tensor<8x1024xf32>
   %s = arith.addf %a, %b : tensor<8x1024xf32>
@@ -194,7 +195,7 @@ func.func @not_a_reduce_kernel(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> {
 // CHECK: rock.blockwise_reduce sum %[[LOOP]] {axis = 1 : index} : tensor<1x2048xf32> -> tensor<1xf32>
 // CHECK-NOT: rock.blockwise_reduce
 func.func @looped(%arg0: tensor<32768xf32>, %arg1: tensor<32768xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
   %b = rock.transform %arg1 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
   %s = arith.addf %a, %b : tensor<4x8192xf32>
@@ -216,7 +217,7 @@ func.func @looped(%arg0: tensor<32768xf32>, %arg1: tensor<32768xf32>, %out: tens
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step
 // CHECK-SAME: iter_args(%{{.*}} = %{{.*}}) -> (tensor<1x2048xf32>)
 func.func @looped_padded(%arg0: tensor<10000xf32>, %out: tensor<2xf32>) -> tensor<2xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #odd_view : tensor<10000xf32> to tensor<2x5000xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<2x5000xf32> -> tensor<2x1xf32>
   %1 = rock.transform %0 by #odd_drop : tensor<2x1xf32> to tensor<2xf32>
@@ -236,9 +237,10 @@ func.func @looped_padded(%arg0: tensor<10000xf32>, %out: tensor<2xf32>) -> tenso
 // CHECK: scf.for %{{.*}} to %[[UB]]
 // CHECK-SAME: -> (tensor<1x256xf32>)
 func.func @pinned_params_force_loop(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 256, numWaves = 4, numStages = 2>} {
   %a = rock.transform %arg0 by #pin_view : tensor<8192xf32> to tensor<8x1024xf32>
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 256, numWaves = 4>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #pin_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>

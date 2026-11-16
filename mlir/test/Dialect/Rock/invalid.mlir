@@ -354,3 +354,35 @@ func.func @transform_unknown_name(%arg0: tensor<64xf32>) {
   %0 = rock.transform %arg0 by <affine_map<(d0) -> (d0)> by [<NotARealTransform ["a"] at [0] -> ["a"] at [0]>] bounds = [64] -> [64]> : tensor<64xf32> to tensor<64xf32>
   return
 }
+
+// -----
+
+// COM: NonGemmParamsAttr: a tile that is not a power of two has no Triton
+// COM: tensor shape to match
+func.func @nongemm_params_not_pow2(%arg0: tensor<64xf32>) -> tensor<64xf32>
+    attributes {rock.kernel, rock.nongemm,
+                // expected-error @+1 {{rowsPerBlock and colsPerBlock must be powers of two, got 1 and 48}}
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 48>} {
+  return %arg0 : tensor<64xf32>
+}
+
+// -----
+
+// COM: NonGemmParamsAttr: numWaves is the workgroup's wave count, which Triton
+// COM: splits the tile across
+func.func @nongemm_params_waves_not_pow2(%arg0: tensor<64xf32>) -> tensor<64xf32>
+    attributes {rock.kernel, rock.nongemm,
+                // expected-error @+1 {{numWaves must be a power of two, got 3}}
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 64, numWaves = 3>} {
+  return %arg0 : tensor<64xf32>
+}
+
+// -----
+
+// COM: NonGemmParamsAttr: a loop is scheduled with at least one stage
+func.func @nongemm_params_zero_stages(%arg0: tensor<64xf32>) -> tensor<64xf32>
+    attributes {rock.kernel, rock.nongemm,
+                // expected-error @+1 {{numStages must be at least 1, got 0}}
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 64, numStages = 0>} {
+  return %arg0 : tensor<64xf32>
+}

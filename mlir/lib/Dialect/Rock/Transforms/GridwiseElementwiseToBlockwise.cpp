@@ -13,7 +13,7 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/Builders.h"
 
-#include "ElementwiseUtils.h"
+#include "NonGemmUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace mlir {
@@ -45,7 +45,7 @@ struct RockGridwiseElementwiseToBlockwisePass
 
 void RockGridwiseElementwiseToBlockwisePass::runOnOperation() {
   func::FuncOp func = getOperation();
-  if (!isStandaloneElementwiseKernel(func))
+  if (!isStandaloneNonGemmKernel(func))
     return;
 
   auto gridSizeAttr =

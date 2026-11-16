@@ -10,7 +10,7 @@
 module {
 // CLONE: [1 1 1]
 // CLONE-NEXT: Unranked Memref base
-  func.func @test_fusion(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> attributes {rock.kernel, rock.reduce, rock.arch = "##TOKEN_ARCH##"} {
+  func.func @test_fusion(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> attributes {rock.kernel, rock.nongemm, rock.arch = "##TOKEN_ARCH##"} {
     %0 = "tosa.reduce_sum"(%arg0) <{axis = 1 : i32}> : (tensor<8x1024xf32>) -> tensor<8x1xf32>
     return %0 : tensor<8x1xf32>
   }

@@ -7,7 +7,7 @@
 // Lowers the `rock.reduce` of a standalone reduce kernel into a tiled
 // `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
 //
-// The tile shape recorded in the op's `rock.reduce_params` is the entire
+// The tile shape recorded in the function's `rock.nongemm_params` is the entire
 // schedule; see `docs/reduce-kernel-plan.md` for why there is nothing else to
 // decide here.
 //
@@ -24,7 +24,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 
-#include "ReduceUtils.h"
+#include "NonGemmUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
@@ -470,30 +470,43 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
   // Validate a schedule the IR already carries rather than overriding it: a
   // silently ignored `params` would hide a wrong tile behind a passing test.
+  // It rides on the function, not on the reduce: a nongemm kernel without a
+  // reduce needs the same schedule and has no op to hang it on.
   int64_t waveSize = rock::getWaveSize(arch);
-  ReduceParamsAttr params = reduceOp.getParamsAttr();
+  auto params = func->getAttrOfType<NonGemmParamsAttr>(
+      rock::NonGemmParamsAttr::getFuncAttrName());
   if (params) {
     // A tile only means anything against a thread count, and the thread count
     // is not ours to pick: it follows the `numWarps` the Triton pipeline runs
     // with, which this pass cannot set.
-    if (params.getNumWaves() != kReduceNumWaves)
-      return reduceOp.emitError("rock.reduce_params has numWaves ")
-             << params.getNumWaves() << ", but a reduce kernel is launched "
-             << kReduceNumWaves
+    if (params.getNumWaves() != kNonGemmNumWaves)
+      return reduceOp.emitError("rock.nongemm_params has numWaves ")
+             << params.getNumWaves() << ", but a nongemm kernel is launched "
+             << kNonGemmNumWaves
              << " waves to a workgroup; a tile chosen for any other thread "
                 "count would not be the one that runs";
+    // Same reasoning for numStages: nothing carries it to the Triton pipeline
+    // yet, so it keeps the `TritonOptions::numStages` default.
+    if (params.getNumStages() != kNonGemmNumStages)
+      return reduceOp.emitError("rock.nongemm_params has numStages ")
+             << params.getNumStages()
+             << ", but nothing propagates it to the Triton pipeline yet, so "
+                "the loop is scheduled with "
+             << kNonGemmNumStages << " stages whatever this says";
     if (params.getRowsPerBlock() >
         static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numRows))))
-      return reduceOp.emitError("rock.reduce_params has rowsPerBlock ")
+      return reduceOp.emitError("rock.nongemm_params has rowsPerBlock ")
              << params.getRowsPerBlock() << ", more rows than the " << numRows
              << " the reduction has";
     if (params.getColsPerBlock() > maxCols)
-      return reduceOp.emitError("rock.reduce_params has colsPerBlock ")
+      return reduceOp.emitError("rock.nongemm_params has colsPerBlock ")
              << params.getColsPerBlock() << ", wider than the " << maxCols
              << "-element limit on what one workgroup holds in registers";
   } else {
-    params = chooseReduceParams(reduceOp, numRows, numCols, waveSize, maxCols);
-    reduceOp.setParamsAttr(params);
+    params = chooseNonGemmParams(func.getContext(),
+                                 getElementTypeOrSelf(reduceOp.getIn()),
+                                 numRows, numCols, waveSize, maxCols);
+    func->setAttr(rock::NonGemmParamsAttr::getFuncAttrName(), params);
   }
 
   int64_t rowsPerBlock = params.getRowsPerBlock();
@@ -619,22 +632,24 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
 void RockLowerReduceToBlockwisePass::runOnOperation() {
   func::FuncOp func = getOperation();
-  if (!isStandaloneReduceKernel(func))
+  if (!isStandaloneNonGemmKernel(func))
     return;
+
+  SmallVector<ReduceOp> reduceOps;
+  func.walk([&](ReduceOp op) { reduceOps.push_back(op); });
+  // A nongemm kernel with no reduce is a pure map; it is tiled elsewhere and
+  // needs nothing from this pass, not even an arch.
+  if (reduceOps.empty())
+    return;
+  if (reduceOps.size() != 1) {
+    func.emitError("a nongemm kernel must hold at most one rock.reduce, found ")
+        << reduceOps.size();
+    return signalPassFailure();
+  }
 
   if (arch.empty()) {
     func.emitError("rock-lower-reduce-to-blockwise needs an arch to know the "
                    "wave size");
-    return signalPassFailure();
-  }
-
-  SmallVector<ReduceOp> reduceOps;
-  func.walk([&](ReduceOp op) { reduceOps.push_back(op); });
-  if (reduceOps.empty())
-    return;
-  if (reduceOps.size() != 1) {
-    func.emitError("a reduce kernel must hold exactly one rock.reduce, found ")
-        << reduceOps.size();
     return signalPassFailure();
   }
 

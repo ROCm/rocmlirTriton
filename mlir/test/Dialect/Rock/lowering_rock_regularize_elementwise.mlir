@@ -9,7 +9,7 @@ module {
   // CHECK: %[[T1:.*]] = rock.transform %arg1 by
   // CHECK: %[[ADD:.*]] = arith.addf %[[T0]], %[[T1]] : tensor<12xf32>
   // CHECK: arith.mulf %[[ADD]], %arg2 : tensor<12xf32>
-  func.func @push_inter_fusion_transform(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<12xf32>, %dest: tensor<12xf32>) -> tensor<12xf32> attributes {rock.kernel, rock.elementwise} {
+  func.func @push_inter_fusion_transform(%arg0: tensor<3x4xf32>, %arg1: tensor<3x4xf32>, %arg2: tensor<12xf32>, %dest: tensor<12xf32>) -> tensor<12xf32> attributes {rock.kernel, rock.nongemm} {
     %add = arith.addf %arg0, %arg1 : tensor<3x4xf32>
     %t = rock.transform %add by #tf_merge : tensor<3x4xf32> to tensor<12xf32>
     %mul = arith.mulf %t, %arg2 : tensor<12xf32>

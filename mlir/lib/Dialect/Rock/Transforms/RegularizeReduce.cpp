@@ -13,7 +13,7 @@
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 
-#include "ReduceUtils.h"
+#include "NonGemmUtils.h"
 
 namespace mlir::rock {
 #define GEN_PASS_DEF_ROCKREGULARIZEREDUCEPASS
@@ -73,7 +73,7 @@ MoveTransformsToInput::matchAndRewrite(TransformOp tOp,
 
 void RegularizeReducePass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
-  if (!isStandaloneReduceKernel(funcOp))
+  if (!isStandaloneNonGemmKernel(funcOp))
     return;
 
   auto *ctx = &getContext();

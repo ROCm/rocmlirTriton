@@ -26,7 +26,7 @@
 // CHECK-NOT: rock.store_marker
 module {
   func.func @reduce_add(%arg0: tensor<8192xf32>, %arg1: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-      attributes {rock.kernel, rock.reduce, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+      attributes {rock.kernel, rock.nongemm, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
     %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
     %b = rock.transform %arg1 by #view : tensor<8192xf32> to tensor<8x1024xf32>
     %s = arith.addf %a, %b : tensor<8x1024xf32>
@@ -56,7 +56,7 @@ module {
 // CHECK: tt.return
 module {
   func.func @reduce_wide(%arg0: tensor<32768xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
-      attributes {rock.kernel, rock.reduce, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
+      attributes {rock.kernel, rock.nongemm, rock.arch = "amdgcn-amd-amdhsa:gfx942"} {
     %a = rock.transform %arg0 by #wide : tensor<32768xf32> to tensor<4x8192xf32>
     %0 = rock.reduce sum %a {axis = 1 : index} : tensor<4x8192xf32> -> tensor<4x1xf32>
     %1 = rock.transform %0 by #wide_drop : tensor<4x1xf32> to tensor<4xf32>
