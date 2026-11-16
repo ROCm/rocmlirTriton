@@ -1,7 +1,7 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-gen -fut test_fusion --arch %arch --clone-harness - | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -arch %arch | rocmlir-gen -ph -print-results -fut test_fusion -rand 1 --verifier clone - | rocmlir-driver -c --reduce -arch %arch | rocm-run | FileCheck %s --check-prefix=CLONE
+// RUN: sed s/##TOKEN_ARCH##/%arch/g %s | rocmlir-gen -fut test_fusion --arch %arch --clone-harness - | rocmlir-driver -host-pipeline highlevel -kernel-pipeline highlevel -arch %arch | rocmlir-gen -ph -print-results -fut test_fusion -rand 1 --verifier clone - | rocmlir-driver -c --nongemm -arch %arch | rocm-run | FileCheck %s --check-prefix=CLONE
 //
 // `-rand 1` draws integers in [-5, 5), so every element differs but each sum
 // stays exact in f32. The reduction order on the GPU is not the CPU verifier's,

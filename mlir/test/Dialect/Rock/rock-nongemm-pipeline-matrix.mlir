@@ -1,4 +1,4 @@
-// RUN: rocmlir-opt --rock-elementwise-pipeline -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt --rock-nongemm-pipeline -mlir-print-local-scope %s | FileCheck %s
 
 module {
   // CHECK-LABEL: module attributes {
