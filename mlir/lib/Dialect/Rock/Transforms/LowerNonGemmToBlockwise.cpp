@@ -294,15 +294,17 @@ static LogicalResult collectInputs(Value root, Operation *errorOp,
   return success();
 }
 
-/// Reject an input whose last axis is not the contiguous one. The reduce axis
-/// being last says nothing about the memory layout, and `tritongpu-coalesce`
-/// derives the blocked layout from the pointer's contiguity, not from our axis
-/// numbering: were the last axis strided, the tile shape chosen here would be
-/// exactly backwards.
+/// Reject an input whose last axis is neither the contiguous one nor a
+/// broadcast. The reduce axis being last says nothing about the memory
+/// layout, and `tritongpu-coalesce` derives the blocked layout from the
+/// pointer's contiguity, not from our axis numbering: were the last axis
+/// strided, the tile shape chosen here would be exactly backwards.
 ///
 /// Kernel arguments are flat by the time they get here, so the composed chain
 /// maps the view's coordinates to a single buffer offset, and "contiguous" is
-/// simply that stepping the last coordinate by one steps the offset by one.
+/// simply that stepping the last coordinate by one steps the offset by one. A
+/// step of zero is a broadcast along the reduced axis, which is uniform
+/// rather than strided and so is allowed as well.
 static LogicalResult checkLastAxisIsContiguous(Value leaf, Operation *errorOp) {
   SmallVector<TransformMapAttr> transforms;
   auto [underlying, _] = untransform(leaf, transforms);
@@ -346,9 +348,15 @@ static LogicalResult checkLastAxisIsContiguous(Value leaf, Operation *errorOp) {
     return errorOp->emitError(
         "could not establish whether the reduction input is contiguous along "
         "the reduced axis");
-  if (*second - *first != 1)
+  int64_t stride = *second - *first;
+  // Stride 0 is a `Broadcast` along the reduced axis, as in the `x - mean`
+  // the mean itself was reduced out of. Every lane of a row then reads the
+  // same element, which is uniform rather than strided and says nothing about
+  // the tile: the shape is decided by whichever inputs do vary along the
+  // axis.
+  if (stride != 1 && stride != 0)
     return errorOp->emitError("reduction input is strided by ")
-           << (*second - *first)
+           << stride
            << " along the reduced axis; the tile shape this pass picks "
               "assumes that axis is the contiguous one";
   return success();

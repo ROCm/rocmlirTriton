@@ -336,3 +336,33 @@ func.func @unmarked_map(%arg0: tensor<256xf32>, %dest: tensor<256xf32>) -> tenso
   %1 = rock.store %0 to %dest by set : tensor<256xf32> -> tensor<256xf32> to tensor<256xf32>
   return %1 : tensor<256xf32>
 }
+
+// -----
+
+// A `Broadcast` along the reduced axis, the shape `x - mean` takes once the
+// mean has been reduced out of it. Every lane of a row reads the same element
+// of that input, which is uniform rather than strided: it says nothing about
+// the tile, which the input that does vary along the axis decides. One load
+// marker is still emitted per leaf, each on its own view.
+#bcast_in = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 512 + d1)> by [<Unmerge{4, 512} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [4, 512] -> [2048]>
+#bcast_rows = #rock.transform_map<affine_map<(d0, d1) -> (d0)> by [<Unmerge{4} ["row"] at [0] -> ["flat"] at [0]>, <AddDim{1} ["unit"] at [1] -> [] at []>] bounds = [4, 1] -> [4]>
+#bcast_spread = #rock.transform_map<affine_map<(d0, d1) -> (d0, 0)> by [<PassThrough ["row"] at [0] -> ["row"] at [0]>, <Broadcast{1} ["col"] at [1] -> ["col"] at [1]>] bounds = [4, 512] -> [4, 1]>
+#bcast_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{4, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [4] -> [4, 1]>
+
+// CHECK-LABEL: func.func @broadcast_along_reduced_axis
+// CHECK-SAME: rock.grid_size = 2 : i32
+// CHECK-DAG: rock.load_marker {{.*}} -> tensor<2x512xf32>
+// CHECK-DAG: rock.load_marker {{.*}} -> tensor<2x512xf32>
+// CHECK: arith.subf {{.*}} : tensor<2x512xf32>
+// CHECK: rock.blockwise_reduce sum {{.*}} : tensor<2x512xf32> -> tensor<2xf32>
+func.func @broadcast_along_reduced_axis(%arg0: tensor<2048xf32>, %arg1: tensor<4xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %a = rock.transform %arg0 by #bcast_in : tensor<2048xf32> to tensor<4x512xf32>
+  %r = rock.transform %arg1 by #bcast_rows : tensor<4xf32> to tensor<4x1xf32>
+  %b = rock.transform %r by #bcast_spread : tensor<4x1xf32> to tensor<4x512xf32>
+  %s = arith.subf %a, %b : tensor<4x512xf32>
+  %0 = rock.reduce sum %s {axis = 1 : index} : tensor<4x512xf32> -> tensor<4x1xf32>
+  %1 = rock.transform %0 by #bcast_drop : tensor<4x1xf32> to tensor<4xf32>
+  %2 = rock.store %1 to %out by set : tensor<4xf32> -> tensor<4xf32> to tensor<4xf32>
+  return %2 : tensor<4xf32>
+}
