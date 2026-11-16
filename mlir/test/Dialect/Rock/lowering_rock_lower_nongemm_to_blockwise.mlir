@@ -11,7 +11,7 @@
 // elements, so the tile is `colsPerBlock = nextPow2(N)` by
 // `rowsPerBlock = 256 * vecWidth / colsPerBlock`.
 
-// RUN: rocmlir-opt -split-input-file -rock-lower-reduce-to-blockwise=arch=gfx942 -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -split-input-file -rock-lower-nongemm-to-blockwise=arch=gfx942 -mlir-print-local-scope %s | FileCheck %s
 
 // A row long enough to fill the workgroup on its own: one row per workgroup,
 // and the reduction has to cross all four waves through LDS.
@@ -244,4 +244,95 @@ func.func @pinned_params_force_loop(%arg0: tensor<8192xf32>, %out: tensor<8xf32>
   %1 = rock.transform %0 by #pin_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
+}
+
+// -----
+
+// A kernel with no reduce is a map: one row holding every element, so the
+// whole tile budget goes to the columns and `rowsPerBlock` is 1. At f32 on a
+// 64-lane wave that budget is `4 waves * 64 lanes * 4 elements = 1024`, which
+// this input exceeds, so the grid takes four blocks of 1024 rather than a
+// loop: the chunks of a map are independent.
+// CHECK-LABEL: func.func @map_tiled_by_the_grid
+// CHECK-SAME: rock.grid_size = 4 : i32
+// CHECK-SAME: rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 1024>
+// CHECK: %[[BID:.*]] = tt.get_program_id x
+// CHECK-DAG: %[[A:.*]] = rock.load_marker %arg0 views {{.*}}[%[[BID]]] {{.*}} -> tensor<1024xf32>
+// CHECK-DAG: %[[B:.*]] = rock.load_marker %arg1 views {{.*}}[%[[BID]]] {{.*}} -> tensor<1024xf32>
+// CHECK: %[[ADD:.*]] = arith.addf {{.*}} : tensor<1024xf32>
+// CHECK: %[[SM:.*]] = rock.store_marker %[[ADD]] {{.*}}[%[[BID]]] : tensor<1024xf32> -> tensor<4096xf32>
+// CHECK: rock.store %[[SM]]
+// CHECK-NOT: scf.for
+func.func @map_tiled_by_the_grid(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %dest: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.addf %arg0, %arg1 : tensor<4096xf32>
+  %1 = rock.store %0 to %dest by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
+  return %1 : tensor<4096xf32>
+}
+
+// -----
+
+// A map smaller than a whole tile shrinks to fit it, rather than padding a
+// full tile's worth of masked lanes it has no work for. One block runs, with
+// the inputs and the destination padded up to the power of two the tile has
+// to be.
+// CHECK-LABEL: func.func @map_padded_to_one_tile
+// CHECK-SAME: rock.grid_size = 1 : i32
+// CHECK-SAME: colsPerBlock = 16
+// CHECK-DAG: rock.transform %arg0 by {{.*}}Pad{0, 4}
+// CHECK-DAG: rock.transform %arg1 by {{.*}}Pad{0, 4}
+// CHECK: arith.addf {{.*}} : tensor<16xf32>
+// CHECK: rock.store {{.*}} : tensor<16xf32> -> tensor<12xf32> to tensor<16xf32>
+func.func @map_padded_to_one_tile(%arg0: tensor<12xf32>, %arg1: tensor<12xf32>, %dest: tensor<12xf32>) -> tensor<12xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.addf %arg0, %arg1 : tensor<12xf32>
+  %1 = rock.store %0 to %dest by set : tensor<12xf32> -> tensor<12xf32> to tensor<12xf32>
+  return %1 : tensor<12xf32>
+}
+
+// -----
+
+// A multi-dimensional map is flattened: the grid covers its elements, not its
+// shape.
+// CHECK-LABEL: func.func @map_flattens_a_2d_kernel
+// CHECK-SAME: rock.grid_size = 2 : i32
+// CHECK-DAG: rock.transform %arg0 by {{.*}}Merge{8, 256}
+// CHECK: rock.load_marker {{.*}} -> tensor<1024xf32>
+// CHECK: math.absf {{.*}} : tensor<1024xf32>
+func.func @map_flattens_a_2d_kernel(%arg0: tensor<8x256xf32>, %dest: tensor<8x256xf32>) -> tensor<8x256xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = math.absf %arg0 : tensor<8x256xf32>
+  %1 = rock.store %0 to %dest by set : tensor<8x256xf32> -> tensor<8x256xf32> to tensor<8x256xf32>
+  return %1 : tensor<8x256xf32>
+}
+
+// -----
+
+// The tile is sized against the widest type the kernel touches, so these f16
+// inputs get the f32 result's 1024-element tile rather than the 2048 their
+// own width would ask for: a thread holding 2048 f16 values holds just as
+// many f32 ones after the extend.
+// CHECK-LABEL: func.func @map_sized_by_the_widest_type
+// CHECK-SAME: colsPerBlock = 1024
+// CHECK: rock.load_marker {{.*}} -> tensor<1024xf16>
+// CHECK: arith.extf {{.*}} : tensor<1024xf16> to tensor<1024xf32>
+func.func @map_sized_by_the_widest_type(%arg0: tensor<4096xf16>, %dest: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.extf %arg0 : tensor<4096xf16> to tensor<4096xf32>
+  %1 = rock.store %0 to %dest by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
+  return %1 : tensor<4096xf32>
+}
+
+// -----
+
+// A function without the marker belongs to another pipeline and is left
+// alone, reduce or no reduce.
+// CHECK-LABEL: func.func @unmarked_map
+// CHECK-NOT: rock.grid_size
+// CHECK-NOT: tt.get_program_id
+func.func @unmarked_map(%arg0: tensor<256xf32>, %dest: tensor<256xf32>) -> tensor<256xf32>
+    attributes {rock.kernel} {
+  %0 = math.absf %arg0 : tensor<256xf32>
+  %1 = rock.store %0 to %dest by set : tensor<256xf32> -> tensor<256xf32> to tensor<256xf32>
+  return %1 : tensor<256xf32>
 }
