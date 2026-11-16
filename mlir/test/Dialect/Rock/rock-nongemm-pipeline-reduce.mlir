@@ -5,7 +5,7 @@
 // should compile to is just a load, a `tt.reduce` and a store, so that is what
 // these check for.
 
-// RUN: rocmlir-opt -split-input-file --rock-reduce-pipeline='arch=gfx942' -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -split-input-file --rock-nongemm-pipeline='arch=gfx942' -mlir-print-local-scope %s | FileCheck %s
 
 #view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 1024 + d1)> by [<Unmerge{8, 1024} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [8, 1024] -> [8192]>
 #drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{8, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [8] -> [8, 1]>

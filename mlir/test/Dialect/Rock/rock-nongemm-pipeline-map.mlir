@@ -1,5 +1,5 @@
-// RUN: rocmlir-opt --rock-elementwise-pipeline -mlir-print-local-scope %s | FileCheck %s --check-prefix=FAST
-// RUN: rocmlir-opt --rock-elementwise-pipeline='disable-fast-math=true' -mlir-print-local-scope %s | FileCheck %s --check-prefix=NOFAST --implicit-check-not='fastmath<'
+// RUN: rocmlir-opt --rock-nongemm-pipeline -mlir-print-local-scope %s | FileCheck %s --check-prefix=FAST
+// RUN: rocmlir-opt --rock-nongemm-pipeline='disable-fast-math=true' -mlir-print-local-scope %s | FileCheck %s --check-prefix=NOFAST --implicit-check-not='fastmath<'
 
 module {
   // FAST-LABEL: module attributes {rock.grid_size.ew_add = 1 : i32}
