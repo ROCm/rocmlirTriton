@@ -507,7 +507,7 @@ void rock::buildElementwisePipeline(OpPassManager &pm,
     pm.addPass(createRemoveDeadValuesPass());
   };
 
-  addWithDCE(rock::createRockRegularizeElementwisePass());
+  addWithDCE(rock::createRockRegularizeNonGemmPass());
   addWithDCE(rock::createRockElementwiseToGridwisePass());
   addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
   addWithDCE(rock::createRockRegularizeInputPass());
@@ -524,14 +524,14 @@ void rock::buildReducePipeline(OpPassManager &pm,
     pm.addPass(createRemoveDeadValuesPass());
   };
 
-  pm.addPass(rock::createRockRegularizeReducePass());
+  pm.addPass(rock::createRockRegularizeNonGemmPass());
   pm.addPass(createCSEPass());
 
   // The tile this pass picks is the whole schedule: `tritongpu-coalesce`
   // derives the blocked layout of the load from it, and that layout decides
   // whether the resulting `tt.reduce` combines in registers, across the lanes
   // of a wave, or through LDS. The tile is chosen against a workgroup of
-  // `kReduceNumWaves` waves, which has to be the `numWarps` the Triton
+  // `kNonGemmNumWaves` waves, which has to be the `numWarps` the Triton
   // pipeline is later run with; see that constant for why nothing enforces it.
   rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
   lowerReduceOpts.arch = options.arch;

@@ -140,16 +140,18 @@ def RockRegularizeInterGemmFusionPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
-def RockRegularizeElementwisePass
-    : Pass<"rock-regularize-elementwise", "::mlir::func::FuncOp"> {
-  let summary = "Push inter-fusion rock.transform ops to elementwise inputs";
+def RockRegularizeNonGemmPass
+    : Pass<"rock-regularize-nongemm", "::mlir::func::FuncOp"> {
+  let summary = "Push rock.transform ops to the inputs of a nongemm kernel";
+  let description = [{
+    A nongemm kernel is a graph of views and elementwise ops, so a view can
+    sit anywhere in it. This pass swaps each `rock.transform` with the fusion
+    op feeding it, which the two commute with, until every view has reached a
+    leaf and the elementwise ops are left stacked on one shape. The passes
+    that tile the kernel can then work in that single shape.
+  }];
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "math::MathDialect"];
-}
-
-def RockRegularizeReducePass
-    : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
-  let summary = "Push rock.transform ops to input";
 }
 
 def RockLowerReduceToBlockwisePass
