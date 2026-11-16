@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 
-#include "ElementwiseUtils.h"
+#include "NonGemmUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -72,7 +72,7 @@ public:
 
 void RockRegularizeElementwisePass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
-  if (!isStandaloneElementwiseKernel(funcOp))
+  if (!isStandaloneNonGemmKernel(funcOp))
     return;
 
   MLIRContext *ctx = &getContext();

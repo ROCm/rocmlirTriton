@@ -207,11 +207,9 @@ LogicalResult RockInsertOutputStoresPass::processKernel(func::FuncOp funcOp,
       fusionRoots.push_back(op);
   });
 
-  // Standalone elementwise and reduce kernels have no op carrying the
-  // FusionRoot trait, so their returned values are what has to be stored.
-  bool isStandaloneKernel =
-      funcOp->hasAttr(rock::ElementwiseAttr::getMnemonic()) ||
-      funcOp->hasAttr(rock::ReduceAttr::getMnemonic());
+  // Standalone nongemm kernels have no op carrying the FusionRoot trait, so
+  // their returned values are what has to be stored.
+  bool isStandaloneKernel = funcOp->hasAttr(rock::NonGemmAttr::getMnemonic());
 
   if (fusionRoots.empty() && !isStandaloneKernel)
     return success();

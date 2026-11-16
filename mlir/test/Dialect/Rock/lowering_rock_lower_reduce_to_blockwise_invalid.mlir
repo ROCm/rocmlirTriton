@@ -13,7 +13,7 @@
 // A reduction over anything but the last axis would need a tile whose
 // contiguous axis is not the reduced one.
 func.func @not_last_axis(%arg0: tensor<8192xf32>, %out: tensor<1024xf32>) -> tensor<1024xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
   // expected-error @+1 {{only last-axis reductions are supported, got axis 0 of a rank-2 input}}
   %0 = rock.reduce sum %a {axis = 0 : index} : tensor<8x1024xf32> -> tensor<1x1024xf32>
@@ -30,7 +30,7 @@ func.func @not_last_axis(%arg0: tensor<8192xf32>, %out: tensor<1024xf32>) -> ten
 // Only sum is in scope. A max reduction needs the neutral fill and the NaN
 // reasoning that go with it.
 func.func @max_reduce(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
   // expected-error @+1 {{only sum reductions are supported by the reduce pipeline}}
   %0 = rock.reduce max %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
@@ -47,7 +47,7 @@ func.func @max_reduce(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8x
 // Fusing an elementwise op after the reduction would have to run on one
 // element per workgroup, which this pipeline does not set up.
 func.func @post_reduce_fusion(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %cst = arith.constant dense<2.0> : tensor<8x1xf32>
   %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
   // expected-error @+1 {{post-reduce fusion is not supported}}
@@ -67,10 +67,11 @@ func.func @post_reduce_fusion(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> t
 // the loop over the reduced axis exists to respect, so overriding it defeats
 // the point.
 func.func @pinned_params_too_wide(%arg0: tensor<16384xf32>, %out: tensor<2xf32>) -> tensor<2xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 8192, numWaves = 4, numStages = 2>} {
   %a = rock.transform %arg0 by #wide : tensor<16384xf32> to tensor<2x8192xf32>
-  // expected-error @+1 {{rock.reduce_params has colsPerBlock 8192, wider than the 2048-element limit}}
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 8192, numWaves = 4>} : tensor<2x8192xf32> -> tensor<2x1xf32>
+  // expected-error @+1 {{rock.nongemm_params has colsPerBlock 8192, wider than the 2048-element limit}}
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<2x8192xf32> -> tensor<2x1xf32>
   %1 = rock.transform %0 by #drop2 : tensor<2x1xf32> to tensor<2xf32>
   %2 = rock.store %1 to %out by set : tensor<2xf32> -> tensor<2xf32> to tensor<2xf32>
   return %2 : tensor<2xf32>
@@ -84,10 +85,11 @@ func.func @pinned_params_too_wide(%arg0: tensor<16384xf32>, %out: tensor<2xf32>)
 // `numWaves` is not a knob: it has to be the number of waves the kernel is
 // actually launched with, which this pipeline does not get to choose.
 func.func @pinned_params_wrong_waves(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 1024, numWaves = 8, numStages = 2>} {
   %a = rock.transform %arg0 by #view : tensor<8192xf32> to tensor<8x1024xf32>
-  // expected-error @+1 {{rock.reduce_params has numWaves 8, but a reduce kernel is launched 4 waves to a workgroup}}
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 1024, numWaves = 8>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  // expected-error @+1 {{rock.nongemm_params has numWaves 8, but a nongemm kernel is launched 4 waves to a workgroup}}
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
@@ -101,11 +103,30 @@ func.func @pinned_params_wrong_waves(%arg0: tensor<8192xf32>, %out: tensor<8xf32
 #drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{8, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [8] -> [8, 1]>
 
 func.func @strided_reduce_axis(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #transposed : tensor<8192xf32> to tensor<8x1024xf32>
   // expected-error @+1 {{reduction input is strided by 8 along the reduced axis}}
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #drop : tensor<8x1xf32> to tensor<8xf32>
+  %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
+  return %2 : tensor<8xf32>
+}
+
+// -----
+
+#stage_view = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 1024 + d1)> by [<Unmerge{8, 1024} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [8, 1024] -> [8192]>
+#stage_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{8, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [8] -> [8, 1]>
+
+// `numStages` is no more a knob than `numWaves`: nothing carries it from this
+// attribute to the Triton pipeline yet, so a pinned value that disagrees with
+// the `TritonOptions` default would describe a schedule that never runs.
+func.func @pinned_params_wrong_stages(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 1024, numWaves = 4, numStages = 1>} {
+  %a = rock.transform %arg0 by #stage_view : tensor<8192xf32> to tensor<8x1024xf32>
+  // expected-error @+1 {{rock.nongemm_params has numStages 1, but nothing propagates it to the Triton pipeline yet}}
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %1 = rock.transform %0 by #stage_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
 }

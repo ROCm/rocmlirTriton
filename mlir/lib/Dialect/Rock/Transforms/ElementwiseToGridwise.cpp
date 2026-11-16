@@ -13,7 +13,7 @@
 #include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/Builders.h"
 
-#include "ElementwiseUtils.h"
+#include "NonGemmUtils.h"
 #include "llvm/Support/MathExtras.h"
 
 namespace mlir {
@@ -73,7 +73,7 @@ struct RockElementwiseToGridwisePass
 
 void RockElementwiseToGridwisePass::runOnOperation() {
   func::FuncOp func = getOperation();
-  if (!isStandaloneElementwiseKernel(func))
+  if (!isStandaloneNonGemmKernel(func))
     return;
 
   int64_t tileSize = getElementwiseTileSize(func);

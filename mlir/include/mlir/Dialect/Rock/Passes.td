@@ -161,7 +161,7 @@ def RockLowerReduceToBlockwisePass
     `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
 
     The schedule is the tile shape `rowsPerBlock x colsPerBlock` recorded in
-    the op's `rock.reduce_params`. There is no algorithm choice beyond it:
+    the function's `rock.nongemm_params`. There is no algorithm choice beyond it:
     `tritongpu-coalesce` derives the blocked layout of the load from the tile,
     and that layout is what decides whether the reduction combines inside a
     thread, across the lanes of a wave, or across waves through LDS. The pass
