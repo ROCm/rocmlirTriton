@@ -38,7 +38,7 @@
 // NOFAST_HOST:migraphx-to-tosa{disable-fast-math=true}
 
 // GPU_EW:Kernel pipeline:
-// GPU_EW-NEXT:builtin.module(func.func(rock-regularize-elementwise),
+// GPU_EW-NEXT:builtin.module(func.func(rock-regularize-nongemm),
 // GPU_EW-NEXT:remove-dead-values{canonicalize=true},
 // GPU_EW-NEXT:func.func(rock-elementwise-to-gridwise),
 // GPU_EW-NEXT:remove-dead-values{canonicalize=true},
