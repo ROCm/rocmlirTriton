@@ -508,8 +508,9 @@ void rock::buildElementwisePipeline(OpPassManager &pm,
   };
 
   addWithDCE(rock::createRockRegularizeNonGemmPass());
-  addWithDCE(rock::createRockElementwiseToGridwisePass());
-  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
+  rock::RockLowerNonGemmToBlockwisePassOptions lowerOpts;
+  lowerOpts.arch = options.arch;
+  addWithDCE(rock::createRockLowerNonGemmToBlockwisePass(lowerOpts));
   addWithDCE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
   addWithDCE(rock::createRockLowerStoresPass());
@@ -533,9 +534,9 @@ void rock::buildReducePipeline(OpPassManager &pm,
   // of a wave, or through LDS. The tile is chosen against a workgroup of
   // `kNonGemmNumWaves` waves, which has to be the `numWarps` the Triton
   // pipeline is later run with; see that constant for why nothing enforces it.
-  rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
+  rock::RockLowerNonGemmToBlockwisePassOptions lowerReduceOpts;
   lowerReduceOpts.arch = options.arch;
-  addWithDCE(rock::createRockLowerReduceToBlockwisePass(lowerReduceOpts));
+  addWithDCE(rock::createRockLowerNonGemmToBlockwisePass(lowerReduceOpts));
 
   addWithDCE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());

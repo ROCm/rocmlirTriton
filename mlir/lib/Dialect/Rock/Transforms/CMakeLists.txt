@@ -12,8 +12,6 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   NonGemmUtils.cpp
   GemmToGridwise.cpp
   AttnToGridwise.cpp
-  ElementwiseToGridwise.cpp
-  GridwiseElementwiseToBlockwise.cpp
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
@@ -46,7 +44,7 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeInput.cpp
   LowerLoads.cpp
   LowerReduce.cpp
-  LowerReduceToBlockwise.cpp
+  LowerNonGemmToBlockwise.cpp
   LowerStores.cpp
   RegularizeInterGemmFusion.cpp
   RegularizeNonGemm.cpp

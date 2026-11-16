@@ -1,21 +1,37 @@
-//===- LowerReduceToBlockwise.cpp - Tile a standalone rock.reduce -------===//
+//===- LowerNonGemmToBlockwise.cpp - Tile a standalone nongemm kernel ---===//
 //
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 //
-// Lowers the `rock.reduce` of a standalone reduce kernel into a tiled
-// `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
+// Tiles a standalone nongemm kernel: a graph of views and elementwise ops,
+// optionally ending in a single `rock.reduce`. Each workgroup's share of the
+// work becomes a `rock.load_marker` per leaf input and a `rock.store_marker`
+// on the way out, with a `rock.blockwise_reduce` in between when there is a
+// reduction; `rock-to-ttir` turns those into `tt.load`, `tt.store` and
+// `tt.reduce`.
 //
-// The tile shape recorded in the function's `rock.nongemm_params` is the entire
-// schedule; see `docs/reduce-kernel-plan.md` for why there is nothing else to
-// decide here.
+// Both kinds of kernel are tiled over the same canonical `M x N` view:
+//
+//   with a reduce:  M rows of the reduced tensor by the reduced extent N
+//   without one:    1 x (total elements)
+//
+// and the same schedule, `rock.nongemm_params`, which is the whole of it:
+// `tritongpu-coalesce` derives the blocked layout of the load from the tile,
+// and that layout is what decides whether a `tt.reduce` combines in
+// registers, across the lanes of a wave, or through LDS.
+//
+// The one structural difference is where the index of a chunk of N comes
+// from. A reduction has to accumulate its chunks in one workgroup to keep a
+// single writer per output row, so chunks become an `scf.for`. A map has no
+// such tie, so its chunks go to the grid and there is no loop.
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
+#include "mlir/Dialect/Rock/IR/GetRockInfo.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/IR/TransformMapBuilder.h"
 #include "mlir/Dialect/Rock/Passes.h"
@@ -31,7 +47,7 @@
 
 namespace mlir {
 namespace rock {
-#define GEN_PASS_DEF_ROCKLOWERREDUCETOBLOCKWISEPASS
+#define GEN_PASS_DEF_ROCKLOWERNONGEMMTOBLOCKWISEPASS
 #include "mlir/Dialect/Rock/Passes.h.inc"
 } // namespace rock
 } // namespace mlir
@@ -41,15 +57,30 @@ using namespace mlir::rock;
 
 namespace {
 
-struct RockLowerReduceToBlockwisePass
-    : public rock::impl::RockLowerReduceToBlockwisePassBase<
-          RockLowerReduceToBlockwisePass> {
-  using rock::impl::RockLowerReduceToBlockwisePassBase<
-      RockLowerReduceToBlockwisePass>::RockLowerReduceToBlockwisePassBase;
+struct RockLowerNonGemmToBlockwisePass
+    : public rock::impl::RockLowerNonGemmToBlockwisePassBase<
+          RockLowerNonGemmToBlockwisePass> {
+  using rock::impl::RockLowerNonGemmToBlockwisePassBase<
+      RockLowerNonGemmToBlockwisePass>::RockLowerNonGemmToBlockwisePassBase;
   void runOnOperation() override;
 
 private:
-  LogicalResult lowerReduce(func::FuncOp func, ReduceOp reduceOp);
+  /// The schedule to tile with, over a canonical `numRows x numCols` view.
+  /// Fills `rock.nongemm_params` in when the function does not carry one, and
+  /// validates rather than overrides one that it does.
+  FailureOr<NonGemmParamsAttr> resolveParams(func::FuncOp func,
+                                             Operation *errorOp, bool hasReduce,
+                                             Type elemType, int64_t numRows,
+                                             int64_t numCols);
+  /// Tile a kernel that ends in `reduceOp`, gridding over rows and walking the
+  /// reduced axis in a loop.
+  LogicalResult lowerReduce(func::FuncOp func, ReduceOp reduceOp,
+                            StoreOp storeOp);
+  /// Tile a kernel that is a pure map, gridding over the flattened elements.
+  LogicalResult lowerMap(func::FuncOp func, StoreOp storeOp);
+
+  /// Lanes per wave, from the `arch` option or from the kernel's `rock.arch`.
+  int64_t waveSize = 0;
 };
 
 /// Names `d0 .. d(rank-1)`, kept alive by the caller for the builders that
@@ -152,6 +183,42 @@ static Value viewDestAsPaddedRows(OpBuilder &b, Location loc, Value dest,
   return TransformOp::create(b, loc, flat, padder.get());
 }
 
+/// Merge `v` to 1-D then pad it out to `paddedSize`, the flat space a map
+/// kernel's grid covers. The padded lanes are masked off on both sides, so
+/// what they read does not matter.
+static Value flattenAndPad(OpBuilder &b, Location loc, Value v,
+                           int64_t paddedSize, Operation *anchor) {
+  auto vType = cast<RankedTensorType>(v.getType());
+
+  OpBuilder::InsertionGuard guard(b);
+  setInsertionPointForViewOf(b, v, anchor);
+
+  Value flat = v;
+  if (vType.getRank() > 1) {
+    DimNames dims(vType.getRank());
+    BottomUpTMBuilder merger(b, dims.names, vType.getShape(), loc);
+    merger.merge("flat", 0, dims.names);
+    flat = TransformOp::create(b, loc, v, merger.get());
+  }
+
+  int64_t numElems = cast<RankedTensorType>(flat.getType()).getDimSize(0);
+  if (numElems == paddedSize)
+    return flat;
+  BottomUpTMBuilder padder(b, {"flat"}, {numElems}, loc);
+  padder.pad("padded", "flat", 0, paddedSize - numElems);
+  return TransformOp::create(b, loc, flat, padder.get());
+}
+
+/// The view from a workgroup's tile coordinates to the padded flat space of a
+/// map kernel. There is no loop here: a map's chunks are independent, so the
+/// chunk index is the workgroup id itself.
+static ArrayAttr buildFlatTileView(OpBuilder &b, Location loc,
+                                   int64_t gridSize, int64_t tileSize) {
+  TopDownTMBuilder builder(b, {"bid", "tile_elem"}, {gridSize, tileSize}, loc);
+  builder.unmerge("elem", 0, {"bid", "tile_elem"}, {gridSize, tileSize});
+  return b.getArrayAttr({builder.get()});
+}
+
 /// The view from a workgroup's tile coordinates to the padded 2-D input.
 /// When the reduction is cut into `numIters` chunks, the iteration number
 /// joins the workgroup id as a second index, supplied by the loop.
@@ -186,13 +253,13 @@ static ArrayAttr buildOutputTileView(OpBuilder &b, Location loc,
   return b.getArrayAttr({builder.get()});
 }
 
-/// Walk back from `root` through the fusion ops feeding the reduction and
-/// collect the top of each input's transform chain, which is what becomes a
+/// Walk back from `root` through the fusion ops feeding it and collect the
+/// top of each input's transform chain, which is what becomes a
 /// `rock.load_marker`, along with the fusion ops themselves, which the loop
 /// form has to move into the loop body.
-static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
-                                         llvm::SetVector<Value> &leaves,
-                                         llvm::SetVector<Operation *> &chain) {
+static LogicalResult collectInputs(Value root, Operation *errorOp,
+                                   llvm::SetVector<Value> &leaves,
+                                   llvm::SetVector<Operation *> &chain) {
   SmallVector<Value> worklist{root};
   DenseSet<Value> seen;
   while (!worklist.empty()) {
@@ -212,11 +279,11 @@ static LogicalResult collectReduceInputs(Value root, Operation *errorOp,
       continue;
     }
     return errorOp->emitError(
-               "unsupported op feeding the reduction; expected only "
-               "elementwise ops and views, got: ")
+               "unsupported op in a nongemm kernel; expected only elementwise "
+               "ops and views, got: ")
            << def->getName();
   }
-  // The walk runs backwards from the reduction, so put the ops back into
+  // The walk runs backwards from the root, so put the ops back into
   // program order before anything moves them.
   SmallVector<Operation *> ordered(chain.begin(), chain.end());
   llvm::sort(ordered, [](Operation *lhs, Operation *rhs) {
@@ -287,96 +354,88 @@ static LogicalResult checkLastAxisIsContiguous(Value leaf, Operation *errorOp) {
   return success();
 }
 
-/// Row-major index of `coords` in a tensor of `shape`.
-static int64_t rowMajorIndex(ArrayRef<int64_t> coords,
-                             ArrayRef<int64_t> shape) {
-  int64_t index = 0;
-  for (auto [coord, extent] : llvm::zip(coords, shape))
-    index = index * extent + coord;
-  return index;
-}
-
-/// The coordinates of row-major index `index` in a tensor of `shape`.
-static SmallVector<int64_t> rowMajorCoords(int64_t index,
-                                           ArrayRef<int64_t> shape) {
-  SmallVector<int64_t> coords(shape.size());
-  for (int64_t dim = shape.size() - 1; dim >= 0; --dim) {
-    coords[dim] = index % shape[dim];
-    index /= shape[dim];
-  }
-  return coords;
-}
-
-/// Check that `views`, the chain carrying the reduction result to its store,
-/// only reshapes it: element `i` in row-major order has to stay element `i`.
+/// Check that `view`, one of the links carrying a reduction result to its
+/// store, only reshapes it row-major and never moves an element.
 ///
-/// This pass drops those views, because `rock-lower-stores` wants the store
-/// source to be the marker itself, and re-expresses both sides of the store in
-/// one flat space instead. That is only sound for an order-preserving
-/// reshape. The maps are affine, so agreeing on zero and on each power-of-two
-/// index settles it for every index.
-static LogicalResult checkViewsAreRowMajorReshapes(
-    ArrayRef<TransformOp> views, ArrayRef<int64_t> resultShape,
-    ArrayRef<int64_t> storedShape, Operation *errorOp) {
-  if (views.empty())
-    return success();
-
-  SmallVector<TransformMapAttr> maps;
-  // `views` runs from the reduction towards the store, and each map's upper
-  // bounds are its own result, so composing from the store backwards gives a
-  // map from stored coordinates to result coordinates.
-  for (TransformOp view : llvm::reverse(views))
-    maps.push_back(view.getTransform());
-  AffineMap composed = composeTransforms(maps);
-
-  MLIRContext *ctx = errorOp->getContext();
-  int64_t numElements = 1;
-  for (int64_t extent : storedShape)
-    numElements *= extent;
-
-  auto mapsTo = [&](int64_t index) -> std::optional<int64_t> {
-    SmallVector<Attribute> operands;
-    for (int64_t coord : rowMajorCoords(index, storedShape))
-      operands.push_back(IntegerAttr::get(IndexType::get(ctx), coord));
-    SmallVector<Attribute> results;
-    if (failed(composed.constantFold(operands, results)))
-      return std::nullopt;
-    SmallVector<int64_t> coords;
-    for (Attribute result : results) {
-      auto intAttr = dyn_cast<IntegerAttr>(result);
-      if (!intAttr)
-        return std::nullopt;
-      coords.push_back(intAttr.getInt());
+/// Those views get dropped, because `rock-lower-stores` wants the store
+/// source to be the marker itself, and both sides of the store are
+/// re-expressed in one flat space instead. Dropping a view is only sound when
+/// the view does nothing: element `i` in row-major order has to stay element
+/// `i`.
+///
+/// The views that normally show up here are not user ops. `rock.reduce` keeps
+/// the reduced axis at extent one and `rock-flatten-tosa-func-args` makes the
+/// kernel's result rank 1, so the frontend leaves a `Merge` behind to join the
+/// two. What this rules out is a view that reorders, such as the
+/// `PassThrough` a `tosa.transpose` after the reduction would become: the
+/// types would still line up after dropping it, and every output would be
+/// written to the wrong address.
+///
+/// `Merge` and `Unmerge` are row-major by definition, so the test is
+/// structural: nothing but those and `PassThrough` may appear, and reading
+/// the transforms in order of their upper dimensions must walk the lower
+/// dimensions in order too. A permutation shows up as `PassThrough` whose
+/// lower dimensions are out of order, padding or broadcasting as a transform
+/// type that is not on the list.
+static LogicalResult checkViewIsRowMajorReshape(TransformOp view,
+                                                Operation *errorOp) {
+  SmallVector<std::pair<uint32_t, SmallVector<uint32_t>>> byUpperDim;
+  for (TransformAttr op : view.getTransform().getOps()) {
+    switch (op.getType()) {
+    case TransformType::PassThrough:
+    case TransformType::Merge:
+    case TransformType::Unmerge:
+      break;
+    default:
+      return errorOp->emitError(
+                 "the views between the reduction and its rock.store must "
+                 "only reshape the result, but one of them is a ")
+             << stringifyEnum(op.getType());
     }
-    if (coords.size() != resultShape.size())
-      return std::nullopt;
-    return rowMajorIndex(coords, resultShape);
-  };
+    // A `PassThrough` carries its dimensions pairwise, so each pair stands on
+    // its own; `Merge` and `Unmerge` relate one dimension on one side to a run
+    // of them on the other.
+    if (op.getType() == TransformType::PassThrough) {
+      for (auto [upper, lower] :
+           llvm::zip(op.getUpperDims(), op.getLowerDims()))
+        byUpperDim.emplace_back(upper, SmallVector<uint32_t>{lower});
+    } else {
+      byUpperDim.emplace_back(*llvm::min_element(op.getUpperDims()),
+                              SmallVector<uint32_t>(op.getLowerDims()));
+    }
+  }
 
-  for (int64_t index = 0; index < numElements;
-       index = index == 0 ? 1 : index * 2) {
-    std::optional<int64_t> mapped = mapsTo(index);
-    if (!mapped)
-      return errorOp->emitError(
-          "could not tell whether the views between the reduction and its "
-          "rock.store merely reshape the result");
-    if (*mapped != index)
-      return errorOp->emitError(
-                 "the views between the reduction and its rock.store reorder "
-                 "the result: element ")
-             << index << " of the store source is element " << *mapped
-             << " of the reduction result";
+  llvm::sort(byUpperDim,
+             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+  uint32_t expected = 0;
+  for (auto &[upperDim, lowerDims] : byUpperDim) {
+    for (uint32_t lowerDim : lowerDims) {
+      if (lowerDim != expected)
+        return errorOp->emitError(
+                   "the views between the reduction and its rock.store "
+                   "reorder the result: dimension ")
+               << lowerDim << " of " << view.getInput().getType()
+               << " is read out of order";
+      ++expected;
+    }
   }
   return success();
 }
 
-/// The `rock.store` the reduction result feeds, plus the views on the way
-/// there. Views are expected: `rock-flatten-tosa-func-args` reshapes the
-/// kernel's results, so a reduction is usually followed by one. An elementwise
-/// op is post-reduce fusion, which this pipeline does not support.
+/// Trace a reduction result to the `rock.store` it feeds, collecting the
+/// views on the way there and vetting each one as it is crossed.
+///
+/// Views are expected: `rock-flatten-tosa-func-args` reshapes the kernel's
+/// results, so a reduction is usually followed by one. They are collected
+/// because this pass drops them, and vetted here for the same reason -- the
+/// walk is the only place that knows which views are on the path, so asking
+/// as each is crossed both answers at once and names the first one that is
+/// not inert. An elementwise op on the way is post-reduce fusion, which this
+/// pipeline does not support.
 static FailureOr<StoreOp>
-findTerminalStore(Value reduced, Operation *errorOp,
-                  SmallVectorImpl<TransformOp> &views) {
+traceReduceToStore(Value reduced, Operation *errorOp,
+                   SmallVectorImpl<TransformOp> &views) {
   StoreOp found;
   Value current = reduced;
   while (true) {
@@ -405,6 +464,8 @@ findTerminalStore(Value reduced, Operation *errorOp,
     }
     if (!nextView)
       break;
+    if (failed(checkViewIsRowMajorReshape(nextView, errorOp)))
+      return failure();
     views.push_back(nextView);
     current = nextView.getResult();
   }
@@ -417,11 +478,86 @@ findTerminalStore(Value reduced, Operation *errorOp,
   return found;
 }
 
-LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
-                                                          ReduceOp reduceOp) {
+/// The element type the tile is sized against: the widest of everything the
+/// kernel touches. A thread wants `128 / elementBits` elements for a
+/// full-width load, and sizing to the widest type keeps the register
+/// footprint of the tile within what that budget intends, at the cost of
+/// leaving a narrower operand's load short of full width.
+static Type widestElementType(ArrayRef<Value> values) {
+  Type widest;
+  for (Value v : values) {
+    Type elemType = getElementTypeOrSelf(v.getType());
+    if (!widest ||
+        elemType.getIntOrFloatBitWidth() > widest.getIntOrFloatBitWidth())
+      widest = elemType;
+  }
+  return widest;
+}
+
+FailureOr<NonGemmParamsAttr> RockLowerNonGemmToBlockwisePass::resolveParams(
+    func::FuncOp func, Operation *errorOp, bool hasReduce, Type elemType,
+    int64_t numRows, int64_t numCols) {
+  // Copied out of the pass options because an `Option<int64_t>` does not
+  // stream into a diagnostic.
+  int64_t maxCols = maxTileCols;
+
+  // Validate a schedule the IR already carries rather than overriding it: a
+  // silently ignored `params` would hide a wrong tile behind a passing test.
+  // It rides on the function, not on the reduce: a nongemm kernel without a
+  // reduce needs the same schedule and has no op to hang it on.
+  auto params = func->getAttrOfType<NonGemmParamsAttr>(
+      rock::NonGemmParamsAttr::getFuncAttrName());
+  if (!params) {
+    params = chooseNonGemmParams(func.getContext(), elemType, hasReduce,
+                                 numRows, numCols, waveSize, maxCols);
+    func->setAttr(rock::NonGemmParamsAttr::getFuncAttrName(), params);
+    return params;
+  }
+
+  // A tile only means anything against a thread count, and the thread count
+  // is not ours to pick: it follows the `numWarps` the Triton pipeline runs
+  // with, which this pass cannot set.
+  if (params.getNumWaves() != kNonGemmNumWaves)
+    return errorOp->emitError("rock.nongemm_params has numWaves ")
+           << params.getNumWaves() << ", but a nongemm kernel is launched "
+           << kNonGemmNumWaves
+           << " waves to a workgroup; a tile chosen for any other thread "
+              "count would not be the one that runs";
+  // Same reasoning for numStages: nothing carries it to the Triton pipeline
+  // yet, so it keeps the `TritonOptions::numStages` default.
+  if (params.getNumStages() != kNonGemmNumStages)
+    return errorOp->emitError("rock.nongemm_params has numStages ")
+           << params.getNumStages()
+           << ", but nothing propagates it to the Triton pipeline yet, so "
+              "the loop is scheduled with "
+           << kNonGemmNumStages << " stages whatever this says";
+  // Rows exist to make a cross-lane combine cheap. A map has none, so rows
+  // would only cap the vector width each thread loads with.
+  if (!hasReduce && params.getRowsPerBlock() != 1)
+    return errorOp->emitError("rock.nongemm_params has rowsPerBlock ")
+           << params.getRowsPerBlock()
+           << ", but a nongemm kernel with no reduce is tiled over its "
+              "flattened elements, where rows buy nothing and only cap the "
+              "vector width";
+  if (params.getRowsPerBlock() >
+      static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numRows))))
+    return errorOp->emitError("rock.nongemm_params has rowsPerBlock ")
+           << params.getRowsPerBlock() << ", more rows than the " << numRows
+           << " the reduction has";
+  if (params.getColsPerBlock() > maxCols)
+    return errorOp->emitError("rock.nongemm_params has colsPerBlock ")
+           << params.getColsPerBlock() << ", wider than the " << maxCols
+           << "-element limit on what one workgroup holds in registers";
+  return params;
+}
+
+LogicalResult
+RockLowerNonGemmToBlockwisePass::lowerReduce(func::FuncOp func,
+                                             ReduceOp reduceOp,
+                                             StoreOp expectedStore) {
   if (reduceOp.getReduceMethod() != ReduceMethod::Sum)
     return reduceOp.emitError(
-        "only sum reductions are supported by the reduce pipeline");
+        "only sum reductions are supported by the nongemm pipeline");
 
   auto inType = cast<RankedTensorType>(reduceOp.getIn().getType());
   if (!inType.hasStaticShape())
@@ -439,19 +575,18 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
 
   SmallVector<TransformOp> resultViews;
   FailureOr<StoreOp> maybeStore =
-      findTerminalStore(reduceOp.getResult(), reduceOp, resultViews);
+      traceReduceToStore(reduceOp.getResult(), reduceOp, resultViews);
   if (failed(maybeStore))
     return failure();
   StoreOp storeOp = *maybeStore;
-  if (failed(checkViewsAreRowMajorReshapes(
-          resultViews, cast<RankedTensorType>(reduceOp.getType()).getShape(),
-          cast<RankedTensorType>(storeOp.getSource().getType()).getShape(),
-          reduceOp)))
-    return failure();
-
+  // The kernel's only store has to be the one the reduction feeds; anything
+  // else would be a second output, which this pipeline does not tile.
+  if (storeOp != expectedStore)
+    return reduceOp.emitError(
+        "the reduction does not feed the kernel's rock.store");
   llvm::SetVector<Value> leaves;
   llvm::SetVector<Operation *> chainOps;
-  if (failed(collectReduceInputs(reduceOp.getIn(), reduceOp, leaves, chainOps)))
+  if (failed(collectInputs(reduceOp.getIn(), reduceOp, leaves, chainOps)))
     return failure();
   for (Value leaf : leaves) {
     auto leafType = cast<RankedTensorType>(leaf.getType());
@@ -464,50 +599,15 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
       return failure();
   }
 
-  // Copied out of the pass options because an `Option<int64_t>` does not
-  // stream into a diagnostic.
-  int64_t maxCols = maxTileCols;
-
-  // Validate a schedule the IR already carries rather than overriding it: a
-  // silently ignored `params` would hide a wrong tile behind a passing test.
-  // It rides on the function, not on the reduce: a nongemm kernel without a
-  // reduce needs the same schedule and has no op to hang it on.
-  int64_t waveSize = rock::getWaveSize(arch);
-  auto params = func->getAttrOfType<NonGemmParamsAttr>(
-      rock::NonGemmParamsAttr::getFuncAttrName());
-  if (params) {
-    // A tile only means anything against a thread count, and the thread count
-    // is not ours to pick: it follows the `numWarps` the Triton pipeline runs
-    // with, which this pass cannot set.
-    if (params.getNumWaves() != kNonGemmNumWaves)
-      return reduceOp.emitError("rock.nongemm_params has numWaves ")
-             << params.getNumWaves() << ", but a nongemm kernel is launched "
-             << kNonGemmNumWaves
-             << " waves to a workgroup; a tile chosen for any other thread "
-                "count would not be the one that runs";
-    // Same reasoning for numStages: nothing carries it to the Triton pipeline
-    // yet, so it keeps the `TritonOptions::numStages` default.
-    if (params.getNumStages() != kNonGemmNumStages)
-      return reduceOp.emitError("rock.nongemm_params has numStages ")
-             << params.getNumStages()
-             << ", but nothing propagates it to the Triton pipeline yet, so "
-                "the loop is scheduled with "
-             << kNonGemmNumStages << " stages whatever this says";
-    if (params.getRowsPerBlock() >
-        static_cast<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numRows))))
-      return reduceOp.emitError("rock.nongemm_params has rowsPerBlock ")
-             << params.getRowsPerBlock() << ", more rows than the " << numRows
-             << " the reduction has";
-    if (params.getColsPerBlock() > maxCols)
-      return reduceOp.emitError("rock.nongemm_params has colsPerBlock ")
-             << params.getColsPerBlock() << ", wider than the " << maxCols
-             << "-element limit on what one workgroup holds in registers";
-  } else {
-    params = chooseNonGemmParams(func.getContext(),
-                                 getElementTypeOrSelf(reduceOp.getIn()),
-                                 numRows, numCols, waveSize, maxCols);
-    func->setAttr(rock::NonGemmParamsAttr::getFuncAttrName(), params);
-  }
+  SmallVector<Value> sizedBy(leaves.begin(), leaves.end());
+  sizedBy.push_back(reduceOp.getIn());
+  sizedBy.push_back(storeOp.getSource());
+  FailureOr<NonGemmParamsAttr> maybeParams =
+      resolveParams(func, reduceOp, /*hasReduce=*/true,
+                    widestElementType(sizedBy), numRows, numCols);
+  if (failed(maybeParams))
+    return failure();
+  NonGemmParamsAttr params = *maybeParams;
 
   int64_t rowsPerBlock = params.getRowsPerBlock();
   int64_t colsPerBlock = params.getColsPerBlock();
@@ -630,29 +730,133 @@ LogicalResult RockLowerReduceToBlockwisePass::lowerReduce(func::FuncOp func,
   return success();
 }
 
-void RockLowerReduceToBlockwisePass::runOnOperation() {
+LogicalResult RockLowerNonGemmToBlockwisePass::lowerMap(func::FuncOp func,
+                                                        StoreOp storeOp) {
+  Value root = storeOp.getSource();
+  auto rootType = dyn_cast<RankedTensorType>(root.getType());
+  if (!rootType || !rootType.hasStaticShape())
+    return storeOp.emitError(
+        "the stored value of a nongemm kernel must be a statically shaped "
+        "tensor");
+  // `rock-regularize-nongemm` pushes every view down to the leaves, so what
+  // is left above the store is the elementwise graph itself. A view here
+  // means the kernel is a plain copy, which has no tile to choose and no
+  // fusion op to hang a marker on.
+  Operation *rootOp = root.getDefiningOp();
+  if (!rootOp || !isFusionOp(rootOp))
+    return storeOp.emitError(
+        "a nongemm kernel with no reduce must compute its stored value with "
+        "at least one elementwise op");
+
+  llvm::SetVector<Value> leaves;
+  llvm::SetVector<Operation *> chainOps;
+  if (failed(collectInputs(root, storeOp, leaves, chainOps)))
+    return failure();
+  for (Value leaf : leaves) {
+    auto leafType = cast<RankedTensorType>(leaf.getType());
+    if (leafType.getShape() != rootType.getShape())
+      return storeOp.emitError("every input of a nongemm kernel must have the "
+                               "shape of its result, got ")
+             << leafType << " for " << rootType;
+  }
+
+  // A map has no reduced axis, so its canonical view is one row holding every
+  // element: the whole tile budget goes to the columns, and `rowsPerBlock`
+  // falls out of the schedule as 1.
+  int64_t numElements = rootType.getNumElements();
+  SmallVector<Value> sizedBy(leaves.begin(), leaves.end());
+  sizedBy.push_back(root);
+  FailureOr<NonGemmParamsAttr> maybeParams =
+      resolveParams(func, storeOp, /*hasReduce=*/false,
+                    widestElementType(sizedBy), /*numRows=*/1, numElements);
+  if (failed(maybeParams))
+    return failure();
+  int64_t tileSize = maybeParams->getColsPerBlock();
+
+  // Chunks of a map are independent, so they go to the grid rather than to a
+  // loop: there is no accumulator to carry between them.
+  int64_t gridSize = llvm::divideCeil(numElements, tileSize);
+  int64_t paddedSize = gridSize * tileSize;
+
+  OpBuilder b(func.getContext());
+  Location loc = storeOp.getLoc();
+  func->setAttr(rock::GridSizeAttr::getMnemonic(),
+                b.getI32IntegerAttr(gridSize));
+
+  b.setInsertionPointToStart(&func.getBody().front());
+  Value bid = triton::GetProgramIdOp::create(b, loc, triton::ProgramIDDim::X);
+  Operation *bidOp = bid.getDefiningOp();
+
+  ArrayAttr tileView = buildFlatTileView(b, loc, gridSize, tileSize);
+
+  for (Value leaf : leaves) {
+    Value padded = flattenAndPad(b, loc, leaf, paddedSize, bidOp);
+    auto tileType = RankedTensorType::get(
+        {tileSize}, cast<RankedTensorType>(leaf.getType()).getElementType());
+
+    OpBuilder::InsertionGuard guard(b);
+    setInsertionPointForViewOf(b, padded, bidOp);
+    auto loadMarker =
+        LoadMarkerOp::create(b, loc, tileType, padded, tileView,
+                             ValueRange{bid}, rock::CacheModifier::CS);
+    propagateOutputType(leaf, loadMarker.getResult());
+  }
+
+  b.setInsertionPoint(storeOp);
+  auto paddedResultType =
+      RankedTensorType::get({paddedSize}, rootType.getElementType());
+  auto storeMarker =
+      StoreMarkerOp::create(b, loc, paddedResultType, storeOp.getSource(),
+                            tileView, ValueRange{bid});
+  storeOp.getSourceMutable().assign(storeMarker.getResult());
+  storeOp.getDestMutable().assign(
+      flattenAndPad(b, loc, storeOp.getDest(), paddedSize, bidOp));
+  return success();
+}
+
+void RockLowerNonGemmToBlockwisePass::runOnOperation() {
   func::FuncOp func = getOperation();
   if (!isStandaloneNonGemmKernel(func))
     return;
 
   SmallVector<ReduceOp> reduceOps;
   func.walk([&](ReduceOp op) { reduceOps.push_back(op); });
-  // A nongemm kernel with no reduce is a pure map; it is tiled elsewhere and
-  // needs nothing from this pass, not even an arch.
-  if (reduceOps.empty())
-    return;
-  if (reduceOps.size() != 1) {
+  if (reduceOps.size() > 1) {
     func.emitError("a nongemm kernel must hold at most one rock.reduce, found ")
         << reduceOps.size();
     return signalPassFailure();
   }
 
-  if (arch.empty()) {
-    func.emitError("rock-lower-reduce-to-blockwise needs an arch to know the "
-                   "wave size");
+  // One output per kernel: a second one would want a grid of its own, since
+  // nothing says two results have the same shape.
+  SmallVector<StoreOp> stores;
+  func.walk([&](StoreOp op) { stores.push_back(op); });
+  if (stores.size() != 1) {
+    func.emitError("a nongemm kernel must hold exactly one rock.store, found ")
+        << stores.size();
     return signalPassFailure();
   }
 
-  if (failed(lowerReduce(func, reduceOps.front())))
+  // The option wins when it is given, which is how the pipelines pass the
+  // arch down; otherwise the kernel's own `rock.arch` answers, which is what
+  // a lit test running this pass alone relies on.
+  StringRef archName = arch;
+  if (archName.empty()) {
+    FailureOr<StringAttr> funcArch = rock::getArchOnFunc(func);
+    if (succeeded(funcArch))
+      archName = funcArch->getValue();
+  }
+  if (archName.empty()) {
+    func.emitError("rock-lower-nongemm-to-blockwise needs an arch to know the "
+                   "wave size, from its option or from rock.arch");
+    return signalPassFailure();
+  }
+  waveSize = rock::getWaveSize(archName);
+
+  LogicalResult result = reduceOps.empty()
+                             ? lowerMap(func, stores.front())
+                             : lowerReduce(func, reduceOps.front(),
+                                           stores.front());
+  if (failed(result))
     return signalPassFailure();
 }

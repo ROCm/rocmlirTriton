@@ -6,9 +6,6 @@
 
 #include "NonGemmUtils.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Rock/utility/loweringUtils.h"
-#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "llvm/Support/MathExtras.h"
@@ -30,6 +27,7 @@ bool mlir::rock::hasReduce(func::FuncOp funcOp) {
 
 NonGemmParamsAttr mlir::rock::chooseNonGemmParams(MLIRContext *ctx,
                                                   Type elemType,
+                                                  bool hasReduce,
                                                   int64_t numRows,
                                                   int64_t numCols,
                                                   int64_t waveSize,
@@ -40,47 +38,29 @@ NonGemmParamsAttr mlir::rock::chooseNonGemmParams(MLIRContext *ctx,
   int64_t vecWidth = std::max<int64_t>(
       1, 128 / std::max<unsigned>(1, elemType.getIntOrFloatBitWidth()));
   int64_t threads = kNonGemmNumWaves * waveSize;
+  // What one workgroup holds when every lane issues one full-width load.
+  int64_t budget = threads * vecWidth;
 
+  // A reduction is allowed to overspend that budget, up to the register limit
+  // `maxTileCols`: its row has to be summed by one workgroup to keep a single
+  // writer per output, so a long row buys fewer, fatter blocks. A map is
+  // under no such obligation, and a tile past the budget would only mean
+  // fewer blocks each doing more, so it stops there.
+  int64_t cap = hasReduce ? maxTileCols : budget;
   int64_t colsPerBlock =
       std::min<int64_t>(llvm::bit_ceil(static_cast<uint64_t>(numCols)),
-                        llvm::bit_ceil(static_cast<uint64_t>(maxTileCols)));
+                        llvm::bit_ceil(static_cast<uint64_t>(cap)));
 
   // Spend the rest of the tile on rows, so a thread ends up with about
   // `vecWidth` elements whatever the reduction extent is. A short reduction
   // therefore packs many rows into a workgroup and keeps the combining inside
   // a wave; a long one drops to a single row and combines through LDS once.
-  // A kernel with no reduce has `numRows == 1` and so lands at one row here.
-  int64_t rowsPerBlock = llvm::bit_ceil(static_cast<uint64_t>(
-      std::max<int64_t>(1, threads * vecWidth / colsPerBlock)));
+  // A map has `numRows == 1` and so lands at one row here.
+  int64_t rowsPerBlock = llvm::bit_ceil(
+      static_cast<uint64_t>(std::max<int64_t>(1, budget / colsPerBlock)));
   rowsPerBlock = std::min<int64_t>(
       rowsPerBlock, llvm::bit_ceil(static_cast<uint64_t>(numRows)));
 
   return NonGemmParamsAttr::get(ctx, rowsPerBlock, colsPerBlock,
                                 kNonGemmNumWaves, kNonGemmNumStages);
-}
-
-int64_t mlir::rock::getElementwiseTileSize(func::FuncOp funcOp) {
-  if (auto blockSize = funcOp->getAttrOfType<IntegerAttr>(
-          rock::BlockSizeAttr::getMnemonic()))
-    return blockSize.getInt();
-  return 256;
-}
-
-llvm::SetVector<Value>
-mlir::rock::getElementwiseKernelInputs(func::FuncOp funcOp) {
-  llvm::SetVector<Value> leafInputs;
-  funcOp.walk([&](Operation *op) {
-    if (!isFusionOp(op))
-      return;
-    for (Value operand : op->getOperands()) {
-      if (!isa<RankedTensorType>(operand.getType()))
-        continue;
-      SmallVector<TransformMapAttr> transforms;
-      auto [underlying, _] = rock::untransform(operand, transforms);
-      if (isa<BlockArgument>(underlying) ||
-          underlying.getDefiningOp<arith::ConstantOp>())
-        leafInputs.insert(operand);
-    }
-  });
-  return leafInputs;
 }

@@ -54,35 +54,25 @@ bool hasReduce(func::FuncOp funcOp);
 ///
 /// The tile shape is the whole schedule, because `tritongpu-coalesce` derives
 /// the blocked layout of the load from it and that layout is what decides how
-/// a `tt.reduce` combines. Picking
+/// a `tt.reduce` combines. With `budget = numWaves * waveSize * vecWidth`,
+/// the elements one workgroup holds when every lane issues one full-width
+/// load, picking
 ///
-///   colsPerBlock = min(nextPow2(numCols), maxTileCols)
-///   rowsPerBlock = clamp(nextPow2(threads * vecWidth / colsPerBlock),
+///   colsPerBlock = min(nextPow2(numCols), hasReduce ? maxTileCols : budget)
+///   rowsPerBlock = clamp(nextPow2(budget / colsPerBlock),
 ///                        1, nextPow2(numRows))
 ///
 /// keeps the elements each thread holds near a full-width load, and falls out
 /// as one workgroup per row for a long reduction and many rows per workgroup
-/// for a short one. A kernel with no reduce has `numRows == 1`, so the clamp
+/// for a short one. Only a reduction may spend past the budget, up to the
+/// register limit `maxTileCols`: its row has to be summed by one workgroup to
+/// keep a single writer per output. A map has `numRows == 1`, so the clamp
 /// hands it `rowsPerBlock == 1` with no special case: with no cross-lane
 /// combine to pay for, rows buy nothing and only cap the vector width.
 NonGemmParamsAttr chooseNonGemmParams(MLIRContext *ctx, Type elemType,
-                                      int64_t numRows, int64_t numCols,
-                                      int64_t waveSize, int64_t maxTileCols);
-
-/// Tile size used by the standalone elementwise lowering.
-/// Falls back to 256 when rock.block_size is absent.
-///
-/// TODO(nongemm): this conflates two different quantities. `rock.block_size`
-/// means threads per workgroup everywhere else (`AffixTuningParameters`,
-/// `AddTritonMetadata`, `RockEmitGpuBinary`), while elements per block is
-/// `rowsPerBlock * colsPerBlock`. It goes away once the elementwise lowering
-/// is merged into `rock-lower-nongemm-to-blockwise` and takes its tile from
-/// `chooseNonGemmParams` like the reduce path does.
-int64_t getElementwiseTileSize(func::FuncOp funcOp);
-
-/// Returns leaf tensor inputs of the elementwise fusion DAG.
-/// Leaves are block arguments or arith constants reached via transform chains.
-llvm::SetVector<Value> getElementwiseKernelInputs(func::FuncOp funcOp);
+                                      bool hasReduce, int64_t numRows,
+                                      int64_t numCols, int64_t waveSize,
+                                      int64_t maxTileCols);
 
 } // namespace rock
 } // namespace mlir
