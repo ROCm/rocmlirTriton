@@ -92,13 +92,6 @@ set(ROCMLIR_TEST_DEPENDS
   rocmlir-gen
   rocmlir-common-python-test-utils
 
-  # Build the perf-script bundle (parameterSweeps.py, attentionSweeps.py,
-  # perfRunner.py, rocm-run, ...) so the lit smoke tests under
-  # ``mlir/test/perf-scripts/`` always have it available, and so developers
-  # iterating on those scripts pick up failures via ``ninja check-rocmlir``
-  # instead of waiting for the weekly Jenkins parameter-sweeps run.
-  ci-performance-scripts
-
   # hsacoDisasm.py, used to compare the kernel binaries that the two binary
   # emission paths produce, plus the llvm-objdump it shells out to.
   rocmlir-widgets
@@ -137,6 +130,7 @@ if(MLIR_ENABLE_ROCM_RUNNER)
     mlir-runner
     # Required by hardware-gated rocmlir-tuning-driver tests.
     rocmlir-tuning-driver
+    ci-performance-scripts
   )
   # Only add mlir_rocm_runtime if it exists (it won't if using pre-built LLVM without ROCm support)
   if(TARGET mlir_rocm_runtime)
