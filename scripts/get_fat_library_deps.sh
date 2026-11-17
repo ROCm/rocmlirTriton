@@ -4,6 +4,9 @@ deps=$(ninja -t deps bin/mlir-mixr-fullc-test | grep lib/lib)
 for dep in $deps; do
   dep=${dep%.a}
   case $dep in
+    # Skip LLVMX86 backend libs, these are only necessary for e2e tests
+    external/llvm-project/llvm/lib/libLLVMX86*)
+      ;;
     external/llvm-project/llvm/lib/lib*)
       dep=${dep#external/llvm-project/llvm/lib/lib}
       mlir_libs="$mlir_libs $dep"

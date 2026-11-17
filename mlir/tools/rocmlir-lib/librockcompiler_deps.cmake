@@ -69,11 +69,6 @@ LLVMTargetParser
 LLVMTextAPI
 LLVMTransformUtils
 LLVMVectorize
-LLVMX86AsmParser
-LLVMX86CodeGen
-LLVMX86Desc
-LLVMX86Disassembler
-LLVMX86Info
 MLIRAffineAnalysis
 MLIRAffineDialect
 MLIRAffineToStandard
