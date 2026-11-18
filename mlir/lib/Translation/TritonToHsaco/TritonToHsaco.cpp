@@ -271,7 +271,10 @@ void setABIVersion(llvm::Module &module, int version) {
                        version);
 }
 
-/// Mirrors upstream compiler.py `is_coexec_scheduler_supported(arch)`.
+/// Mirrors the arch half of upstream compiler.py
+/// `is_coexec_scheduler_enabled(arch)`. The `knobs.amd.use_coexec_scheduler`
+/// override it checks first is deliberately not mirrored; see
+/// docs/bump_triton_version.md section 8.1.
 bool isCoexecSchedulerSupported(llvm::StringRef arch) {
   return arch.starts_with("gfx1250");
 }
@@ -368,8 +371,7 @@ void setKernelAttributes(llvm::Module &module, StringRef archStr,
   }
 
   // gfx1250 coexec scheduler hint. Mirrors upstream compiler.py make_llir():
-  //   if is_coexec_scheduler_supported(options.arch) and options.num_warps <=
-  //   4:
+  //   if is_coexec_scheduler_enabled(options.arch) and options.num_warps <= 4:
   //       kernel_fn.add_fn_attr("amdgpu-sched-strategy", "coexec")
   // Added after waves-per-eu, matching upstream order.
   if (isCoexecSchedulerSupported(archStr) && numWarps <= 4) {

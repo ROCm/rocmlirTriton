@@ -7,9 +7,9 @@ rocmlirTriton no longer vendors `external/triton` and
 configure time:
 
 - `cmake/triton.cmake` (FetchContent)
-  - `ROCMLIR_TRITON_GIT_TAG` (`rmt-<date>`)
-  - `ROCMLIR_LLVM_GIT_TAG` (`rmt-core-<date>`)
-  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG` (`rmt-amd-<date>`)
+  - `ROCMLIR_TRITON_GIT_BRANCH` (`rmt-<date>`)
+  - `ROCMLIR_LLVM_GIT_BRANCH` (`rmt-core-<date>`)
+  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH` (`rmt-amd-<date>`)
 
 Downstream patches are no longer stored as `*.patch` files in this repo.
 They live as commits on the external branch tips.
@@ -70,9 +70,9 @@ In your `ROCm/llvm-project` clone:
 After pushing the new external branch tips, update the branch names in:
 
 - `cmake/triton.cmake`
-  - `ROCMLIR_TRITON_GIT_TAG`
-  - `ROCMLIR_LLVM_GIT_TAG`
-  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG`
+  - `ROCMLIR_TRITON_GIT_BRANCH`
+  - `ROCMLIR_LLVM_GIT_BRANCH`
+  - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH`
   - (and `ROCMLIR_AMD_CODEGEN_LLVM_REVISION` if your policy bumps it)
 
 Then build:
@@ -112,6 +112,7 @@ for f in \
     python/src/llvm.cc \
     third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp \
     third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h \
+    third_party/amd/lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp \
     CMakeLists.txt \
     python/build_helpers.py; do
   git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" --function-context -- "$f" > "$(basename "$f").diff"
@@ -161,10 +162,10 @@ upstream on **`allow_flush_denorm`**: after linking device libraries, stamp the
 `"denormal-fp-math-f32"` string (see section 8.1).
 
 `TritonToHsaco.cpp` also deliberately diverges on **LLVM IR verification**.
-Upstream verifies unconditionally in two places: `to_module()` calls
-`translateModuleToLLVMIR` with verification enabled, and the codegen pass
-manager adds `createVerifierPass()` after the always-inliner (llvm.cc lines
-333-344, mirrored by `emitMachineCode()`). Each is a full IR walk on every
+Upstream verifies unconditionally in two places: the `to_module()` binding calls
+`translateModuleToLLVMIR`, and `translateLLVMIRToASM()` adds
+`createVerifierPass()` after the always-inliner (both in `python/src/llvm.cc`,
+the latter mirrored by `emitMachineCode()`). Each is a full IR walk on every
 compile over IR our own MLIR lowering just produced. We gate both on the
 `kVerifyLLVMIR` constant, which follows `NDEBUG`, so assert-enabled builds
 verify and release builds do not. A bump that reintroduces either call
@@ -309,7 +310,68 @@ enough, because the seeds still draw the same configs. Any other change to the
 field list changes which configs the seeds draw, so rewriting the strings is
 not enough: the seeds in the table have to be tested again.
 
-### 5.4 Mirrored Enums / Attributes (from `TritonAttrDefs.td`)
+### 5.3.5 gfx11 WMMA + InlineSpiller "corrupted sub-interval"
+
+Distinct from the spill-slot bug in 5.3.4: this one is an assertion, not a
+miscompile, and it fires at compile time.
+
+```
+InlineSpiller.cpp: Assertion `OrigVNI && "corrupted sub-interval"' failed.
+```
+
+in `InlineSpiller::reMaterializeFor`.
+
+The cause is a stale early-clobber kill slot. A two-address pseudo whose def is
+`@earlyclobber` makes LiveIntervals end the *tied use* at the early-clobber slot
+rather than the regular one (`LiveIntervalCalc::extendToUses`, the
+`isRegTiedToDefOperand` branch), which is correct while the tie exists.
+`TwoAddressInstructionPass::convertInstTo3Addr` can then rewrite the op into its
+three-address form, dropping the tie -- AMDGPU:
+`V_WMMA_*_twoaddr` -> `V_WMMA_*_threeaddr`, i.e.
+`@earlyclobber $vdst,$vdst = $src2` -> `@earlyclobber $vdst`.
+`SIInstrInfo::convertToThreeAddress` fixes up the live range of the new
+early-clobber *def* but not of the formerly tied *use*, which keeps ending at a
+slot nothing redefines any more. `-verify-machineinstrs` reports it directly:
+
+```
+*** Bad machine code: Live segment ending at early clobber slot must be
+    redefined by an EC def in the same instruction ***
+```
+
+It stays latent until that register is spilled, because `reMaterializeFor` is
+the only reader that queries the *original* interval at `getRegSlot(/*EC=*/true)`.
+So three things must coincide: the converted WMMA is the last use of its `src2`,
+that register gets spilled, and the target has early-clobber WMMA. Both GFX11
+and GFX12 WMMA carry `@earlyclobber $vdst` with `isConvertibleToThreeAddress`,
+so neither is immune; only the register pressure differs.
+
+Observed on gfx1151 (and gfx1100) with the `attn:v1:32,32,256,...` perf config,
+whose `kPerBlock=256` exceeds the first GEMM's K and so unrolls the whole
+padded K into one `tt.dot`, spilling hard. A standalone repro:
+
+```bash
+rocmlir-gen -m 384 -n 384 -k 128 -gemmO 128 --transA=true --transB=true \
+  --transC=false --transO=true \
+  -perf_config=attn:v1:32,32,256,1,1,2,0,4,1,0,0 \
+  --operation gemm_gemm -t f16 --arch gfx1151 -pv \
+| rocmlir-driver --host-pipeline=highlevel | rocmlir-driver -c
+```
+
+The fix is to recompute the formerly tied register's live range once the tie is
+gone, at the end of `convertInstTo3Addr` (after the old instruction is erased --
+doing it inside the target hook trips over the stale MI still on the use list):
+
+```cpp
+  if (LIS && RegB.isVirtual() && LIS->hasInterval(RegB))
+    LIS->shrinkToUses(&LIS->getInterval(RegB));
+```
+
+Validated against the whole e2e + fusion suite. It has to land on **both**
+branch tips: `rmt-amd-<date>` is what `rocmlir-driver` links and therefore what
+fixes the failures, `rmt-core-<date>` keeps `llc`/`opt` consistent. On every
+bump, re-check whether upstream has fixed it before carrying the patch again.
+
+### 5.4 Mirrored Enums / Attributes (from `TritonAttrEnums.td`)
 
 Some Triton enums are hand-replicated in the Rock dialect so we can carry the
 value through Rock IR (and map it back onto Triton when lowering) without taking
@@ -318,10 +380,11 @@ will silently drift if upstream changes them, so diff the source on every bump:
 
 | Rock copy | Upstream source | What to check |
 |-----------|-----------------|---------------|
-| `CacheModifier` / `CacheModifierAttr` in `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` | `TT_CacheModifierAttr` in `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` | Names **and** integer values must match one-to-one (currently `none=1, ca=2, cg=3, wb=4, cs=5, wt=6, cv=7`). The Rock->Triton lowering relies on the integer values lining up. |
+| `CacheModifier` / `CacheModifierAttr` in `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` | `TT_CacheModifierAttr` in `external/triton/include/triton/Dialect/Triton/IR/TritonAttrEnums.td` | Names **and** integer values must match one-to-one (currently `none=1, ca=2, cg=3, wb=4, cs=5, wt=6, cv=7`). The Rock->Triton lowering relies on the integer values lining up. The enum lived in `TritonAttrDefs.td` until the 2026-11 bump split the plain `I32EnumAttr`s out into `TritonAttrEnums.td`; diff both, since a future split can move it again and a diff of the wrong file reports no change. |
 
 ```bash
 git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  include/triton/Dialect/Triton/IR/TritonAttrEnums.td \
   include/triton/Dialect/Triton/IR/TritonAttrDefs.td
 ```
 
@@ -413,6 +476,48 @@ git -C "$LLVM_REPO" diff "$OLD_LLVM_CORE..$NEW_LLVM_CORE" -- \
   llvm/cmake/modules/HandleLLVMOptions.cmake
 ```
 
+### 5.4.4 Mirrored IR shapes (from `BufferOpsEmitter.cpp`)
+
+`rock-fold-oob-buffer-ops` reads Triton's own output rather than a symbol or a
+constant: it recognises the offset the buffer-op emitter hands a masked-off
+lane, proves it past `numRecords`, and drops the access so the stored value and
+everything feeding it can die. That makes the emitter's **code shape** a mirrored
+copy like the ones above, and a quieter one -- a shape change does not fail to
+build or to run, it just stops the fold from firing, and the only symptom is the
+padding epilogue staying alive.
+
+| Rock copy | Upstream source | What to check |
+|-----------|-----------------|---------------|
+| `classifyOobOffset()` in `mlir/lib/Dialect/Rock/Transforms/FoldOobBufferOps.cpp` | `BufferEmitter::fillCommonArgs()` in `external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp` | How a masked lane's `voffset` is formed and what reaches `soffset`. Today the emitter selects a bare `-1` (or `-accessBytes` for atomics, which fault on a misaligned address even out of bounds) and passes `soffset` through, so a zero-`soffset` bound on `voffset` decides on its own. If the emitter starts relating the two again, the pass declines every such access and silently stops reclaiming. |
+
+```bash
+git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
+  third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp
+```
+
+The 2026-11 bump is the worked example in the other direction. Upstream used to
+lift a uniform part of the offset into an soffset SGPR, which made a bare
+sentinel unsound (the hardware checks `voffset + soffset`), so it emitted a
+correlated pair that the pass matched structurally:
+
+```
+%c    = llvm.icmp "sge" %uniform, 0
+soff  = llvm.select %c, %uniform, 0
+%oob  = llvm.select %c, llvm.sub(-1, %uniform), -2147483648
+```
+
+That scheme is gone, together with the `annotate-buffer-op-split-safety` pass
+behind it: a bare `-1` ends past 2^32 and so is out of bounds for any 32-bit
+`numRecords` whatever the soffset adds. gfx1100 and gfx1200 stopped taking the
+split path, their fold went from 24 of 32 stores to 31, and the matcher was
+dropped as unreachable.
+
+The counts in `mlir/test/rocmlir-driver/oob-buffer-store-fold{,-padded-tile}.mlir`
+are what makes any of this visible, so treat a count moving there as a signal to
+re-read the emitter rather than as a number to refresh. Keep the
+`-NOT: llvm.icmp "sge"` lines: they are the tripwire for the correlated form
+coming back.
+
 ### 5.5 Architecture Database (`AmdArchDb.cpp`)
 
 `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` maps AMD GPU architectures to hardware
@@ -457,12 +562,16 @@ an already-listed family are covered automatically by the lookup-time fallback
 list, regenerate the `.inc` (Step 11).
 
 **How to detect needed changes:** Triton uses exhaustive `switch` statements over
-`ISAFamily`. If a new variant is added, our switches (which use `default:`) will
-silently return a fallback value. The `ISAFamily` enum is defined in
-`TargetFeatures.h` (it moved out of the now-removed
-`TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries, along with the
-`.cpp` that holds the `isCDNA` / `isRDNA` switch bodies (a reclassification does
-not touch the header):
+`ISAFamily`, and so do most of ours, so a new variant is usually a build error in
+`AmdArchDb.cpp` rather than a silent fallback. Two functions still end in
+`default:` and will quietly bucket a new family: `getMaxNumChiplets()` (falls back
+to 1 chiplet) and `getMaxWavesPerEU()` (falls back to 1 wave, which would
+drastically misreport occupancy). Check those two by hand on every bump, and
+prefer making a switch exhaustive over adding a `default:` when editing. The
+`ISAFamily` enum is defined in `TargetFeatures.h` (it moved out of the
+now-removed `TritonAMDGPUToLLVM/TargetUtils.h`); diff it for new entries, along
+with the `.cpp` that holds the `isCDNA` / `isRDNA` switch bodies (a
+reclassification does not touch the header):
 
 ```bash
 git -C "$TRITON_REPO" diff "$OLD_TRITON..$NEW_TRITON" -- \
@@ -544,7 +653,9 @@ The following Python features are **intentionally omitted** from the C++ impleme
 | `llvm.dump_sched_dag()` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.amd.swap_mir` | `compiler.py` make_amdgcn | Debugging feature not needed |
 | `knobs.compilation.dump_ir_*` | `compiler.py` make_llir | Debugging feature not needed |
-| FPSan instrumentation mode | `compiler.py` make_ttgir | Not implemented |
+| FPSan instrumentation mode | `compiler.py` make_ttgir | Not implemented (the call site is kept commented out in `Pipelines.cpp::makeTTGIR()`) |
+| ConSan (concurrency sanitizer) | `compiler.py` make_llir (`prepare_consan_captures`, `concurrency_sanitizer`, and the `gluon` canonicalizer/CSE pair that follows them) | Not implemented; upstream runs the whole group only under `is_enabled(options, "consan")` |
+| `gluon_to_ttgir()` and every `passes.gluon.*` it adds | `compiler.py` | A separate frontend entry point (wired in as the `ttgir` stage only when the source is Gluon), not a stage of `make_ttgir`. The one `passes.gluon.add_inliner` on the normal path, in `make_llir`, *is* mirrored (`createGluonInline`). Do not read `add_warp_pipeline` / `add_allocate_warp_groups` / `add_resolve_auto_encodings` out of `gluon_to_ttgir` as missing TTGIR passes. |
 
 When reviewing diffs, **skip changes** related to these features.
 
@@ -561,6 +672,7 @@ On a bump, review the upstream diff and propagate any default/semantic changes:
 | `knobs.amd.use_buffer_atomics`                    | `useBufferAtomics`                    | `TritonOptions::useBufferAtomics`                              |
 | `knobs.amd.buffer_ops_analyze_small_tensor_range` | (not in perfConfig -- debug-only)     | `TritonOptions::bufferOpsAnalyzeSmallTensorRange`              |
 | `knobs.amd.use_expert_scheduling`                 | (not in perfConfig -- debug-only)     | `BackendOptions::useExpertScheduling` -> `TritonToHsacoOptions::useExpertScheduling` (backend/HSACO stage, not the Triton MLIR pipeline) |
+| `knobs.amd.use_coexec_scheduler`                  | (not in perfConfig -- debug-only)     | not mirrored as a knob; `TritonToHsaco.cpp` mirrors the `is_coexec_scheduler_enabled()` arch gate and the `num_warps <= 4` condition only |
 | `HIPOptions.allow_flush_denorm`                   | (not in perfConfig)                   | `BackendOptions::allowFlushDenorm` -> `TritonToHsacoOptions::allowFlushDenorm` and `RockPrepareLLVMPassOptions::allowFlushDenorm` |
 
 `knobs.amd.use_expert_scheduling` deliberately diverges from upstream Triton's
@@ -601,10 +713,35 @@ the value through `compileUtils.cpp`. For a debug knob: only add the
 `TritonOptions` field (and document it like
 `bufferOpsAnalyzeSmallTensorRange`); skip the perfConfig schema entirely.
 
-`HIPOptions.schedule_hint` is intentionally not mirrored: upstream gutted
-it (the field is now a no-op default `''`, and the TTGIR/LLIR sched-hint
-passes plus the `memory-bound-attention -> amdgpu-sched-strategy=iterative-ilp`
-mapping were all removed).
+`HIPOptions.schedule_hint` is **not** mirrored, but it is no longer the dead
+field this guide used to describe. The 2025 gutting it records did happen: the
+TTGIR/LLIR sched-hint passes and the
+`memory-bound-attention -> amdgpu-sched-strategy=iterative-ilp` mapping were
+removed, and that is why `scheduleHint` was dropped from the perfConfig schema
+in v3 (`RockDialect.cpp` still decodes and discards the v2 token). As of the
+2026-11 bump upstream has reused the name for something else: `parse_options()`
+now accepts exactly one value, `"mfma-schedule"`, and `make_llir()` ends with
+
+```python
+# Opt-in MFMA scheduler, see the schedule_hint option (validated in parse_options).
+if options.schedule_hint == "mfma-schedule" and options.arch in ("gfx942", "gfx950"):
+    amd.add_mfma_schedule_pass(kernel_fn, options.arch)
+```
+
+which runs `mlir::triton::AMD::runMFMASchedulePass` on the kernel function
+after `optimize_module`. We do not expose it: the default is still `''`, so
+not mirroring it matches upstream's default behaviour exactly. Treat it as an
+open question rather than a settled omission -- it is an LLVM-level,
+per-function, gfx942/gfx950-only scheduler, so if we ever want it, it is a
+`BackendOptions` / `TritonToHsacoOptions` knob (like expert scheduling), not a
+revival of the old perfConfig bitfield. Do not re-add the retired field name
+to the schema; see section 8.2.
+
+`knobs.amd.use_coexec_scheduler` (new in the 2026-11 bump) is likewise not
+mirrored as a knob. `TritonToHsaco.cpp` mirrors only the arch half of
+`is_coexec_scheduler_enabled()` plus the `num_warps <= 4` condition, i.e. the
+upstream default with the environment override left out, which is how the other
+debug-only knobs are handled.
 
 ### 8.2 Adding or removing a perfConfig field
 
@@ -741,6 +878,84 @@ nightly pipeline runs both too (`check-mlir` there with
 `MLIR_INCLUDE_INTEGRATION_TESTS=ON`), so a bump that lands on `develop` is
 covered even if this step is skipped.
 
+### 12.1 Running the suites by hand
+
+`ninja -C build check-rocmlir` is the whole suite. To iterate on a subset, run
+`lit` directly against the configured test directories under `build/mlir/test`
+(not `mlir/test`, which has no `lit.site.cfg.py`):
+
+```bash
+LD_LIBRARY_PATH=$ROCM_PATH/lib lit -v -j 16 build/mlir/test/Dialect build/mlir/test/Conversion
+LD_LIBRARY_PATH=$ROCM_PATH/lib lit -v build/mlir/test/e2e --filter 'config_23_7'
+```
+
+Three things that cost time if you do not know them:
+
+- `LD_LIBRARY_PATH` is not optional. `build/mlir/test/lit.site.cfg.py` calls
+  `apply_arch_features()`, which imports the `hip` Python module to enumerate
+  agents; without `libamdhip64.so` on the loader path every suite dies while
+  parsing its config, before running a single test.
+- `ninja -C build` does **not** rebuild everything the suite runs. The gtest
+  binary and the CAPI test binaries are not in the default target, so after a
+  change to a `.td` or to a dialect you can spend a while reading failures from
+  a stale binary. Build them explicitly:
+  `ninja -C build MLIRRockUnitTests mlir-mixr-capi-test mlir-mixr-fullc-test
+  mlir-mixr-split-k-test mlir-reduce-fusible-test`.
+- The GPU e2e suites (`build/mlir/test/e2e`, `build/mlir/test/fusion/e2e`) get
+  flaky above roughly `-j 8` on a single-GPU host: contention makes individual
+  configs time out. Before investigating an e2e failure from a full-suite run,
+  re-run it alone with `--filter`.
+
+### 12.2 Upstream MLIR/LLVM churn that only shows up in the lit suite
+
+Most of the fallout from a bump is not in the Triton mirrors at all: it is
+upstream MLIR changing how IR is *spelled*. The build never notices, and it
+lands as hundreds of lit failures at once. Expect this to be the bulk of the
+work, and triage by error text rather than test by test, since one upstream
+change usually accounts for a whole block of the failure list:
+
+```bash
+LD_LIBRARY_PATH=$ROCM_PATH/lib lit -v -j 16 build/mlir/test/... > /tmp/lit.log 2>&1
+grep -oE "error: [^\"]{0,90}" /tmp/lit.log | sed 's/[0-9]\+/N/g' | sort | uniq -c | sort -rn
+```
+
+The table below is what the 2026-11 bump hit, which doubles as a list of the
+kinds of change to look for. Note how many are a *printer* change: the input IR
+still parses, only the `CHECK` lines fail, and it reads like a behaviour
+regression until you diff the actual tool output.
+
+| Symptom in the log | Upstream change | What we did |
+|--------------------|-----------------|-------------|
+| `inherent attribute 'x' cannot be parsed from attr-dict when strict properties in assembly format is enabled` | `useStrictPropertiesInAssemblyFormat` now defaults to 1 in `external/llvm-project/mlir/include/mlir/IR/DialectBase.td`, and the old `usePropertiesForAttributes` opt-out is gone: every ODS-declared attribute is a property, and `attr-dict` no longer round-trips it | Set `useStrictPropertiesInAssemblyFormat = 0` on `Rock_Dialect` and `MIGraphX_Dialect`, keeping the legacy merged `{...}` spelling. That flag is deprecated upstream; migrating the formats to `prop-dict` (which prints `{discardable} <inherent>`) is a separate, test-wide change |
+| `expected '<'` on `rock.store ... by set`, or `#rock<CacheModifier none>` no longer parsing | the default `EnumAttr` assembly format became `` `<` $value `>` ``, turning `#rock<Foo bar>` into `#rock.Foo<bar>` and a bound enum operand into `<bar>` | Pinned the old spelling: explicit `let assemblyFormat = "$value";` on the Rock `EnumAttr`s, plus the `enum($x)` op-format directive for enum operands |
+| `custom op 'tosa.transpose' expected 'perms'` and friends | TOSA moved inherent attributes out of `attr-dict` into keyword syntax: `perms([...])`, `axis(N)`, `values(...)`, `pad(...) stride(...) dilation(...) acc_type(...)`, `block_size<...>`, `operator_name(...)` | Mechanical test rewrite; `scripts/migrate_tosa_attr_syntax.py` does it, including the `<{...}>` properties form needed by ops written in generic form |
+| `CHECK` lines for `tosa.const` / `tosa.cast` / `tosa.conv2d` that used to match | `tosa.const` gained an assembly format (so it stopped printing in generic form), and the optional `input_unsigned(false)` / `local_bound(false)` clauses print whenever the attribute is present, which it is on anything our builders create | Test-only, but *not* uniform: a cast parsed from test input has no clause while one a pass created does, so blanket edits are wrong |
+| `custom op 'bufferization.to_tensor' inherent attribute 'restrict' ...`, `rocdl.make.buffer.rsrc ... expected ','` | the same strict-properties rule applied to upstream dialects, plus `make.buffer.rsrc` now spelling the `numRecords` type in its format | Test-only syntax updates |
+| `'llvm.mlir.constant' op attribute and type have different integer types` | new exact-match verifier in `LLVMDialect.cpp`; `llvm.mlir.constant(-1 : i32) : i64` is no longer representable | Decide per test: in `fold-oob-buffer-ops.mlir` it makes the sign/zero-extension cases unreachable, along with the `FoldOobBufferOps.cpp::matchConstantInt` logic they covered |
+| `fastmathFlags = #llvm.fastmath<...>` not found | LLVM-dialect arithmetic ops print a `fastmath<...>` keyword clause now; `llvm.call` still uses the attr-dict form | Test-only, but the two spellings coexist, so rewrite per op rather than globally |
+| `'False' is invalid value for boolean argument! Try 0 or 1` | `cl::opt<bool>` stopped matching case-insensitively. Lowercase `true`/`false` and `1`/`0` still work; only Python's capitalized `True`/`False` broke, so the message's "Try 0 or 1" undersells it | Lowercased `-transA=False` and friends on the RUN lines. Also fix the generators: anything that interpolates a Python `bool` straight into a flag (`f"-transA={self.trans_a}"` in perfRunner/tuningRunner) emits the capitalized form, so it needs `str(x).lower()`. Leave the `to_command_line()` tuning key alone -- it already spelled these in words, and the word form is what `RockTuningImpl.cpp`, the shipped `tier1-*`/`selected-*` configs and existing tuning DBs all use |
+| `pipelines.mlir` / `runner-pipelines.mlir` option-string mismatches | upstream pass options changed (`arith-expand` gained `include-f8e4m3fn` / `include-f8e5m2`, `tosa-to-linalg` gained `allow-non-finites`, `one-shot-bufferize` renamed `check-parallel-regions` to `may-have-parallel-regions`) | Re-pin from the actual `-dump-pipelines` output, after checking that no rocMLIR pass vanished from the list |
+| `.amdgcn_target "amdgcn-amd-amdhsa-..."` not found; the "codegen with no subarch in the target triple" warning gone | the AMDGPU triple now encodes the subarch (`amdgpu12.50-amd-amdhsa-unknown-gfx1250`) | Loosened the triple expectations; the vanished warning is an improvement, not a loss |
+| `hidden_block_count_x` missing from the HSA kernarg metadata | the backend no longer lists unused hidden kernargs | Re-anchored `no-heap-ptr-func-check.mlir` on `kernarg_segment_size` |
+| `tt.reshape ... allow_reorder` failing to parse, then `Expected result encoding ...` | `allow_reorder` is gone (reshape always reorders; the opt-in is now `efficient_layout`) and the verifier requires the inferred linear result layout | Dropped the keyword and gave the result the linear encoding |
+| `'builtin.module' op requires "ttg.num-warps" to be a positive power of two` | new TritonGPU module verifier | The test used 17 warps to exceed the workgroup limit; switched to 32 and updated the expected block size |
+| `Assertion `status == expectedStatus' failed` out of `createConstantFloatOp` | not upstream churn as such, but it surfaces through it: `f8E8M0FNU` (the MX scale type) has **no representable zero**, so converting `0.0` into it yields 2^-127 with `opInexact`. `APFloat::semanticsHasZero` is the predicate | The caller was building a zero-initialised vector purely as scaffolding and then overwriting every lane, so it was changed to materialise the pattern as one `arith.constant dense<[...]>`. Do not relax the `expectedStatus` assert: it is what catches genuine quantization mistakes |
+| A `COUNT-n` on `@llvm.exp2` (or any elementwise intrinsic) finding fewer calls than pinned | LLVM's SLP vectorizer now widens them, per-arch: 8 scalar `exp2.f32` became 2 `exp2.v4f32` on CDNA and 8 `exp2.v2f32` on gfx1250, while gfx1100/gfx1200 stayed scalar | Re-pin to the vector form and say in the comment that `n` x width is the same work the scalar count used to express. Counting calls stopped being a proxy for counting lanes |
+
+Two lessons worth repeating on the next bump:
+
+- **Fix the parse errors first, then re-triage.** A single unparseable op fails
+  a whole directory of e2e tests at the first command in the pipe, and those
+  failures say nothing about the rest of the pipeline. The 2026-11 bump went
+  from 736 failures to 33 on two one-line dialect changes plus the mechanical
+  syntax rewrites; only then were the real regressions visible.
+- **A printed-form change can hide a behaviour change.** Confirm against actual
+  tool output (run `rocmlir-opt` / `rocmlir-driver` on the test input) instead
+  of assuming an expectation is merely stale. That is how the fast-tanh
+  regression in section 5.4.2 and the `oob-buffer-store-fold` store-count drop
+  were caught, and conversely how the `tosa.cast` clause churn was confirmed
+  harmless.
+
 ## Checklist Summary
 
 Use this checklist to track progress:
@@ -748,21 +963,23 @@ Use this checklist to track progress:
 - [ ] Record `OLD_REPO`
 - [ ] Create/update external branches: `rmt-<date>`, `rmt-core-<date>`, `rmt-amd-<date>`
 - [ ] Pull upstream commits into those branches and cherry-pick surviving downstream commits
-- [ ] Update `ROCMLIR_TRITON_GIT_TAG`, `ROCMLIR_LLVM_GIT_TAG`, `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG` in CMake files
+- [ ] Update `ROCMLIR_TRITON_GIT_BRANCH`, `ROCMLIR_LLVM_GIT_BRANCH`, `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH` in CMake files
 - [ ] Build with `cmake.sh`
 - [ ] Generate diff for `third_party/amd/backend/compiler.py`
 - [ ] Generate diff for `python/src/llvm.cc`
 - [ ] Generate diff for `third_party/amd/python/triton_amd.cc`
 - [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp`
-- [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h`
+- [ ] Generate diff for `third_party/amd/include/Dialect/TritonAMDGPU/IR/TargetFeatures.h` and `.../lib/Dialect/TritonAMDGPU/IR/TargetFeatures.cpp`
 - [ ] Generate diff for `CMakeLists.txt` and `python/build_helpers.py`, then update `cmake/triton.cmake` for any new build options, downloads, or generated cache variables
-- [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` and reconcile the mirrored `CacheModifier` enum (see section 5.4)
+- [ ] Generate diff for `include/triton/Dialect/Triton/IR/TritonAttrEnums.td` (and `TritonAttrDefs.td`) and reconcile the mirrored `CacheModifier` enum (see section 5.4)
 - [ ] Generate diff for `include/triton/Dialect/Triton/IR/Traits.h` and reconcile the mirrored `kTritonMaxTensorNumElements` constant (see section 5.4.1)
-- [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()` (see section 5.4.2)
+- [ ] Generate diff for `third_party/amd/language/hip/libdevice.py` and `BuiltinFuncToLLVM.cpp`, and reconcile the mirrored `__ocml_*` / `__triton_hip_fast_tanhf` symbol names in `LegalizeMathForTriton.cpp` and the arch gate in `tritonLowersTanhToNativeInst()`, keeping the fast and library spellings distinct (see section 5.4.2)
 - [ ] Generate diff for `llvm/cmake/modules/HandleLLVMOptions.cmake` and reconcile the mirrored `LLVM_ENABLE_ASSERTIONS` flag block in `cmake/triton.cmake` (see section 5.4.3)
+- [ ] Generate diff for `third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp` and re-read `classifyOobOffset()` against the masked-lane offset it builds; a moved store count in `oob-buffer-store-fold*.mlir` is the signal (see section 5.4.4)
 - [ ] Check whether the pinned LLVM revision fixes the KV-cache raw-buffer bounds-checking bug and re-evaluate the N-loop clamp (see section 5.3.2)
 - [ ] Check whether the pinned LLVM revision fixes the gfx950 packed-FP32 / MFMA hazard and re-evaluate the perfConfig pin in `mixr-attention-flash-decoding-3d-output-fusion.mlir` (see section 5.3.3)
 - [ ] Check whether the pinned LLVM revision fixes llvm/llvm-project#225054 and re-evaluate `SKIPPED_PERF_CONFIGS` in `parameterSweeps.py` (see section 5.3.4)
+- [ ] Check whether the pinned LLVM revision still needs the `convertInstTo3Addr` live-range fix for the gfx11 WMMA InlineSpiller assertion, and carry it on both `rmt-core-*` and `rmt-amd-*` if so (see section 5.3.5)
 - [ ] Update `Pipelines.cpp::makeTTIR()` for `make_ttir()` changes
 - [ ] Update `Pipelines.cpp::makeTTGIR()` for `make_ttgir()` changes
 - [ ] Update `Pipelines.cpp::makeLLIR()` for `make_llir()` Part 1 changes
@@ -776,16 +993,18 @@ Use this checklist to track progress:
 - [ ] Update `tritonUtils.cpp::getMfmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::getWmmaVersion()` if changed
 - [ ] Update `tritonUtils.cpp::mlirTypeToScaleDotElemType()` if changed
-- [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added (see section 5.5)
+- [ ] Update `AmdArchDb.cpp` if new `ISAFamily` added, including the two switches that still fall through a `default:` (`getMaxNumChiplets`, `getMaxWavesPerEU`) and the pybind enum in `mlir/test/common_utils/amd_arch_db/binding.cpp` (see section 5.5)
 - [ ] Diff `TargetFeatures.cpp` and re-check the `isCDNA` / `isRDNA` classification that picks the tuning space (see section 5.5)
 - [ ] Add a representative chip to `DEFAULT_ARCHES` in `generateLDSBlacklist.py` if a new ISA family was added (see section 5.5)
-- [ ] Mirror new or dropped `knobs.amd.*` switches, and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
+- [ ] Mirror new or dropped `knobs.amd.*` switches, re-check `HIPOptions.schedule_hint` (upstream reused the name for the opt-in MFMA scheduler), and if the perfConfig gained or lost a field, keep configs saved against the old schema readable (see sections 8.1 and 8.2)
 - [ ] Reconcile downstream-only commits on the new external branch tips (drop upstreamed commits, keep required ones)
 - [ ] Keep architecture removals/renames/reclassification in sync with upstream (`AmdArchDb.cpp`, tests, perf scripts; see section 5.5), e.g. `GCN5_1`/`CDNA1` removal and `GFX1250 -> CDNA5`
 - [ ] Build project with `cmake.sh`
 - [ ] Regenerate `librockcompiler_deps.cmake` with `scripts/get_fat_library_deps.sh` (from the build directory; check that no `LLVMX86*` entries reappeared)
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
 - [ ] Run tests with `cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir`
+- [ ] Refresh IR-syntax expectations for upstream MLIR printer/parser changes, triaging by error text, and confirm each one against real tool output rather than assuming the expectation is stale (see section 12.2)
+- [ ] Rebuild the unit-test and CAPI binaries before trusting their results, and re-run e2e failures individually (see section 12.1)
 - [ ] All tests pass
 - [ ] Commit all changes
 
@@ -844,10 +1063,10 @@ those as paths inside your external repo checkouts: `$TRITON_REPO` /
 | Mirrored `CacheModifier` enum | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
 | perfConfig field list / schema | `mlir/include/mlir/Dialect/Rock/IR/RockAttrDefs.td` |
 | perfConfig parser | `mlir/lib/Dialect/Rock/IR/RockDialect.cpp` |
-| Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrDefs.td` |
+| Triton `CacheModifier` source | `external/triton/include/triton/Dialect/Triton/IR/TritonAttrEnums.td` |
 | Mirrored `kTritonMaxTensorNumElements` constant | `mlir/lib/Dialect/Rock/Tuning/RockTuningImpl.cpp` |
 | Triton `maxTensorNumElements` source | `external/triton/include/triton/Dialect/Triton/IR/Traits.h` |
-| Mirrored `__ocml_*` symbol names | `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` |
+| Mirrored `__ocml_*` / `__triton_hip_fast_tanhf` symbol names | `mlir/lib/Dialect/Rock/Transforms/LegalizeMathForTriton.cpp` |
 | Triton libdevice symbol source | `external/triton/third_party/amd/language/hip/libdevice.py` |
 | Mirrored tanh rewrite arch gate | `mlir/lib/Dialect/Rock/IR/AmdArchDb.cpp` (`tritonLowersTanhToNativeInst`) |
 | Triton tanh rewrite source | `external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BuiltinFuncToLLVM.cpp` |
@@ -860,5 +1079,8 @@ those as paths inside your external repo checkouts: `$TRITON_REPO` /
 | Build script | `cmake.sh` |
 | Fat library deps generator | `scripts/get_fat_library_deps.sh` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |
+| TOSA attribute-syntax migration helper | `scripts/migrate_tosa_attr_syntax.py` |
+| Mirrored masked-lane offset shape | `mlir/lib/Dialect/Rock/Transforms/FoldOobBufferOps.cpp` (`classifyOobOffset`) |
+| Triton buffer-op emitter source | `external/triton/third_party/amd/lib/TritonAMDGPUToLLVM/BufferOpsEmitter.cpp` |
 | LDS blacklist generator | `mlir/utils/performance/generateLDSBlacklist.py` |
 | LDS blacklist table | `mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc` |
