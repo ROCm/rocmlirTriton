@@ -1836,20 +1836,30 @@ static llvm::SmallVector<float, 3> getTensorInitPattern(Type elemType,
 static LogicalResult populateTensorFillLogic(OpBuilder &b, Location loc,
                                              ArrayRef<float> pattern,
                                              Type elemType, Value toFill) {
-  // TODO(kdrewnia) Refactor this to create the constant vector up front
-  Value constantsVec = rock::createZeroConstantOp(
-      b, loc, VectorType::get(pattern.size(), elemType));
-  for (auto v : llvm::enumerate(pattern)) {
-    Value vOp;
-    if (elemType.isIntOrIndex()) {
-      vOp = rock::createConstantIntOp(b, loc, elemType, elemType,
-                                      static_cast<int64_t>(v.value()));
-    } else {
-      vOp = rock::createConstantFloatOp(b, loc, elemType, elemType, v.value());
+  // Materialize the pattern as a single constant vector
+  auto vecType = VectorType::get(pattern.size(), elemType);
+  Value constantsVec;
+  if (elemType.isIntOrIndex()) {
+    SmallVector<APInt> values;
+    values.reserve(pattern.size());
+    for (float value : pattern)
+      values.emplace_back(elemType.getIntOrFloatBitWidth(),
+                          static_cast<int64_t>(value), /*isSigned=*/true);
+    constantsVec = arith::ConstantOp::create(
+        b, loc, DenseElementsAttr::get(vecType, values));
+  } else {
+    SmallVector<APFloat> values;
+    values.reserve(pattern.size());
+    for (float value : pattern) {
+      auto [apValue, status] = rock::createAPFloat(elemType, value);
+      if (status != APFloat::opOK)
+        return emitError(loc) << "test pattern value " << value
+                              << " is not exactly representable in " << elemType
+                              << "; pick a pattern that the type can hold";
+      values.push_back(apValue);
     }
-    constantsVec =
-        vector::InsertOp::create(b, loc, vOp, constantsVec, v.index())
-            .getResult();
+    constantsVec = arith::ConstantOp::create(
+        b, loc, DenseElementsAttr::get(vecType, values));
   }
 
   Value toFillFlat = makeNDMemRef(b, toFill, 1);
