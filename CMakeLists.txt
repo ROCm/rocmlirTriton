@@ -345,3 +345,6 @@ endif()
 #===----------------------------------------------------------------------===//
 
 add_subdirectory(mlir)
+
+set(CPACK_SOURCE_IGNORE_FILES "/.git/" "/build/" ".*-subbuild/" ".*-build/")
+include(CPack)
