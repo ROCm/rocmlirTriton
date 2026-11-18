@@ -9,7 +9,6 @@ configure time:
 - `cmake/triton.cmake` (FetchContent)
   - `ROCMLIR_TRITON_GIT_TAG` (`rmt-<date>`)
   - `ROCMLIR_LLVM_GIT_TAG` (`rmt-core-<date>`)
-- `cmake/triton_amd_codegen.cmake` (ExternalProject_Add)
   - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG` (`rmt-amd-<date>`)
 
 Downstream patches are no longer stored as `*.patch` files in this repo.
@@ -32,10 +31,7 @@ export OLD_REPO=$(git rev-parse HEAD)
 
 ### 1.2 Record current external pins from CMake
 
-Read the current branch/tag pins from:
-
-- `cmake/triton.cmake`
-- `cmake/triton_amd_codegen.cmake`
+Read the current branch/tag pins from `cmake/triton.cmake`
 
 Set the date suffix you plan to bump to:
 
@@ -76,7 +72,6 @@ After pushing the new external branch tips, update the branch names in:
 - `cmake/triton.cmake`
   - `ROCMLIR_TRITON_GIT_TAG`
   - `ROCMLIR_LLVM_GIT_TAG`
-- `cmake/triton_amd_codegen.cmake`
   - `ROCMLIR_AMD_CODEGEN_LLVM_GIT_TAG`
   - (and `ROCMLIR_AMD_CODEGEN_LLVM_REVISION` if your policy bumps it)
 
