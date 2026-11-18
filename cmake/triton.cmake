@@ -18,15 +18,15 @@ include(ExternalProject)
 
 set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-10-19"
+set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-11-18"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
 set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
-set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-10-19"
+set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-11-18"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
 set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the standalone AMD code-generation LLVM")
-set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH "rmt-amd-2026-10-19"
+set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH "rmt-amd-2026-11-18"
     CACHE STRING "Git branch/tag/commit for the standalone AMD code-generation LLVM")
 set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}-1"
     CACHE STRING
