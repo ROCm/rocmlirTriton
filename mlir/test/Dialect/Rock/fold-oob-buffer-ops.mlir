@@ -557,40 +557,6 @@ module attributes {"ttg.num-ctas" = 1 : i32} {
 
 // -----
 
-// The split-soffset shape: the emitter has lifted a uniform part of the offset
-// into soffset, so both arms of the out-of-bounds select are out of bounds and
-// the two selects share their condition.
-// CHECK-LABEL: llvm.func @split_soffset_sentinel
-// CHECK-NOT:     rocdl.raw.ptr.buffer.store
-// CHECK:       llvm.return
-llvm.func @split_soffset_sentinel(%ptr: !llvm.ptr<1>, %data: i32, %uniform: i32) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  %oob = llvm.mlir.constant(-2147483648 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %nonNeg = llvm.icmp "sge" %uniform, %zero : i32
-  %soffset = llvm.select %nonNeg, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %uniform : i32
-  %splitOob = llvm.select %nonNeg, %negated, %oob : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
 // A discarded raw load reads as zero, so the load folds instead of being erased.
 // CHECK-LABEL: llvm.func @load_folds_to_zero
 // CHECK-NOT:     rocdl.raw.ptr.buffer.load
@@ -882,8 +848,8 @@ llvm.func @wrong_sentinel_declines(%ptr: !llvm.ptr<1>, %data: i32) attributes {r
 // -----
 
 // An unconstrained soffset could carry voffset + soffset past 2^32 and wrap it
-// back to the start of the buffer. Only a zero soffset or the correlated pair
-// rules that out, and this is neither.
+// back to the start of the buffer. Only a zero soffset rules that out, so any
+// soffset the pass cannot pin to zero is declined.
 // CHECK-LABEL: llvm.func @plain_sentinel_runtime_soffset_declines
 // CHECK:         rocdl.raw.ptr.buffer.store
 llvm.func @plain_sentinel_runtime_soffset_declines(%ptr: !llvm.ptr<1>, %data: i32,
@@ -903,174 +869,6 @@ llvm.func @plain_sentinel_runtime_soffset_declines(%ptr: !llvm.ptr<1>, %data: i3
   %row = llvm.urem %tid, %four : i32
   %pred = llvm.icmp "uge" %row, %sixteen : i32
   %voffset = llvm.select %pred, %offset, %oob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
-// The correlated pair without its guard. Nothing bounds %uniform, so the offset
-// arm can be any value at all and the sum with soffset can wrap into the buffer.
-// CHECK-LABEL: llvm.func @split_soffset_without_sge_guard_declines
-// CHECK:         rocdl.raw.ptr.buffer.store
-llvm.func @split_soffset_without_sge_guard_declines(%ptr: !llvm.ptr<1>, %data: i32,
-                                                   %uniform: i32, %cond: i1) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  %oob = llvm.mlir.constant(-2147483648 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %soffset = llvm.select %cond, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %uniform : i32
-  %splitOob = llvm.select %cond, %negated, %oob : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
-// The guard is there but the offset arm negates a different value than the one
-// lifted into soffset, so the two no longer sum to all-ones.
-// CHECK-LABEL: llvm.func @split_soffset_mismatched_negation_declines
-// CHECK:         rocdl.raw.ptr.buffer.store
-llvm.func @split_soffset_mismatched_negation_declines(%ptr: !llvm.ptr<1>, %data: i32,
-                                                     %uniform: i32, %other: i32) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  %oob = llvm.mlir.constant(-2147483648 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %nonNeg = llvm.icmp "sge" %uniform, %zero : i32
-  %soffset = llvm.select %nonNeg, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %other : i32
-  %splitOob = llvm.select %nonNeg, %negated, %oob : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
-// Both selects are well formed but pick their arms on different conditions, so
-// the pair is no longer correlated. With %cond true and %uniform negative,
-// soffset takes a value near 2^32 while the offset takes the plain sentinel,
-// and that sum wraps back into the buffer.
-// CHECK-LABEL: llvm.func @split_soffset_unshared_condition_declines
-// CHECK:         rocdl.raw.ptr.buffer.store
-llvm.func @split_soffset_unshared_condition_declines(%ptr: !llvm.ptr<1>, %data: i32,
-                                                    %uniform: i32, %cond: i1) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  %oob = llvm.mlir.constant(-2147483648 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %nonNeg = llvm.icmp "sge" %uniform, %zero : i32
-  %soffset = llvm.select %cond, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %uniform : i32
-  %splitOob = llvm.select %nonNeg, %negated, %oob : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
-// The correlated pair is well formed, but the arm it falls back to when the
-// lifted value is negative is an ordinary in-bounds offset rather than a
-// sentinel, so that half of the access still reaches memory.
-// CHECK-LABEL: llvm.func @split_soffset_in_bounds_fallback_declines
-// CHECK:         rocdl.raw.ptr.buffer.store
-llvm.func @split_soffset_in_bounds_fallback_declines(%ptr: !llvm.ptr<1>, %data: i32,
-                                                    %uniform: i32) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483646 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %nonNeg = llvm.icmp "sge" %uniform, %zero : i32
-  %soffset = llvm.select %nonNeg, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %uniform : i32
-  %splitOob = llvm.select %nonNeg, %negated, %offset : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
-  rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
-  llvm.return
-}
-
-// -----
-
-// The split shape proves nothing about a buffer larger than the offset arm's own
-// lower bound of 2^31, which is all the shared condition gives. Both fallback
-// arms are past this larger bound, so that is the only reason to decline.
-// CHECK-LABEL: llvm.func @split_soffset_num_records_past_split_declines
-// CHECK:         rocdl.raw.ptr.buffer.store
-llvm.func @split_soffset_num_records_past_split_declines(%ptr: !llvm.ptr<1>, %data: i32,
-                                                        %uniform: i32) attributes {rock.arch = "gfx1100"} {
-  %stride = llvm.mlir.constant(0 : i16) : i16
-  %numRecords = llvm.mlir.constant(2147483649 : i64) : i64
-  %flags = llvm.mlir.constant(822243328 : i32) : i32
-  %rsrc = rocdl.make.buffer.rsrc %ptr, %stride, %numRecords, %flags : <1>, i64 to <8>
-
-  %zero = llvm.mlir.constant(0 : i32) : i32
-  %minusOne = llvm.mlir.constant(-1 : i32) : i32
-  %four = llvm.mlir.constant(4 : i32) : i32
-  %sixteen = llvm.mlir.constant(16 : i32) : i32
-  // 4000000000 unsigned, past the numRecords above.
-  %farOob = llvm.mlir.constant(-294967296 : i32) : i32
-  %offset = llvm.mlir.constant(64 : i32) : i32
-
-  %nonNeg = llvm.icmp "sge" %uniform, %zero : i32
-  %soffset = llvm.select %nonNeg, %uniform, %zero : i1, i32
-  %negated = llvm.sub %minusOne, %uniform : i32
-  %splitOob = llvm.select %nonNeg, %negated, %farOob : i1, i32
-
-  %tid = rocdl.workitem.id.x : i32
-  %row = llvm.urem %tid, %four : i32
-  %pred = llvm.icmp "uge" %row, %sixteen : i32
-  %voffset = llvm.select %pred, %offset, %splitOob : i1, i32
   rocdl.raw.ptr.buffer.store %data, %rsrc, %voffset, %soffset, 0 : i32
   llvm.return
 }

@@ -45,14 +45,18 @@
 
 // GFX942-COUNT-4: call{{.*}}@llvm.amdgcn.mfma
 // GFX942-NOT: call{{.*}}@llvm.amdgcn.mfma
-// GFX942-COUNT-8: call{{.*}}@llvm.exp2
+// LLVM vectorizes the eight surviving exp2 lanes 4-wide on CDNA, so the two
+// calls below are the same reclaim the scalar count used to spell out.
+// GFX942-COUNT-2: call{{.*}}@llvm.exp2.v4f32
 // GFX942-NOT: call{{.*}}@llvm.exp2
 // GFX942-COUNT-2: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX942-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store
 
 // GFX950-COUNT-2: call{{.*}}@llvm.amdgcn.mfma
 // GFX950-NOT: call{{.*}}@llvm.amdgcn.mfma
-// GFX950-COUNT-8: call{{.*}}@llvm.exp2
+// LLVM vectorizes the eight surviving exp2 lanes 4-wide on CDNA, so the two
+// calls below are the same reclaim the scalar count used to spell out.
+// GFX950-COUNT-2: call{{.*}}@llvm.exp2.v4f32
 // GFX950-NOT: call{{.*}}@llvm.exp2
 // GFX950-COUNT-2: call void @llvm.amdgcn.raw.ptr.buffer.store
 // GFX950-NOT: call void @llvm.amdgcn.raw.ptr.buffer.store
