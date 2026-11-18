@@ -73,12 +73,11 @@ struct KernelOptions : public PassPipelineOptions<KernelOptions> {
 /// Adds the GEMM/conv/attention `kernel` pipeline to the `OpPassManager`.
 void buildKernelPipeline(OpPassManager &pm, const KernelOptions &options = {});
 
-/// Adds the standalone elementwise pipeline to the `OpPassManager`.
-void buildElementwisePipeline(OpPassManager &pm,
-                              const KernelOptions &options = {});
-
-/// Adds the standalone reduce kernel pipeline
-void buildReducePipeline(OpPassManager &pm, const KernelOptions &options = {});
+/// Adds the standalone nongemm pipeline to the `OpPassManager`. A nongemm
+/// kernel is a graph of views and elementwise ops, optionally ending in a
+/// single `rock.reduce`, with no GEMM/conv/attention root; it needs no tuning
+/// parameters.
+void buildNonGemmPipeline(OpPassManager &pm, const KernelOptions &options = {});
 
 /// Adds final passes common to kernel pipelines
 void buildKernelPipelineTail(OpPassManager &pm,

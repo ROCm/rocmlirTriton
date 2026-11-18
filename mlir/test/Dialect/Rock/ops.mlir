@@ -368,3 +368,15 @@ func.func @rock_reduce_sum_i8(%in: tensor<8x32xi8>) -> tensor<8x1xi8> attributes
 // CHECK-LABEL: func.func @rock_reduce_sum_i8
 // CHECK: rock.reduce sum
 
+
+// A nongemm kernel's schedule rides on the function. `numWaves` and
+// `numStages` default to the TritonOptions defaults the Triton pipeline
+// actually runs with, so an unset one describes what happens, and the printer
+// elides them when they are at those defaults.
+// CHECK-LABEL: func.func @nongemm_params_round_trip
+// CHECK-SAME: rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 4, colsPerBlock = 1024>
+func.func @nongemm_params_round_trip(%arg0: tensor<64xf32>) -> tensor<64xf32>
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 4, colsPerBlock = 1024, numWaves = 4, numStages = 2>} {
+  return %arg0 : tensor<64xf32>
+}

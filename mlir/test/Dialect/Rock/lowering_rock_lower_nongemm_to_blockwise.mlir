@@ -11,7 +11,7 @@
 // elements, so the tile is `colsPerBlock = nextPow2(N)` by
 // `rowsPerBlock = 256 * vecWidth / colsPerBlock`.
 
-// RUN: rocmlir-opt -split-input-file -rock-lower-reduce-to-blockwise=arch=gfx942 -mlir-print-local-scope %s | FileCheck %s
+// RUN: rocmlir-opt -split-input-file -rock-lower-nongemm-to-blockwise=arch=gfx942 -mlir-print-local-scope %s | FileCheck %s
 
 // A row long enough to fill the workgroup on its own: one row per workgroup,
 // and the reduction has to cross all four waves through LDS.
@@ -26,7 +26,7 @@
 // CHECK: rock.store_marker %[[RED]] {{.*}}[%[[BID]]] : tensor<1xf32> -> tensor<8xf32>
 // CHECK-NOT: rock.reduce
 func.func @long_rows(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #long_view : tensor<8192xf32> to tensor<8x1024xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #long_drop : tensor<8x1xf32> to tensor<8xf32>
@@ -47,7 +47,7 @@ func.func @long_rows(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf
 // CHECK: rock.load_marker {{.*}} -> tensor<64x16xf32>
 // CHECK: rock.blockwise_reduce sum {{.*}} : tensor<64x16xf32> -> tensor<64xf32>
 func.func @short_rows(%arg0: tensor<65536xf32>, %out: tensor<4096xf32>) -> tensor<4096xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #short_view : tensor<65536xf32> to tensor<4096x16xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<4096x16xf32> -> tensor<4096x1xf32>
   %1 = rock.transform %0 by #short_drop : tensor<4096x1xf32> to tensor<4096xf32>
@@ -66,7 +66,7 @@ func.func @short_rows(%arg0: tensor<65536xf32>, %out: tensor<4096xf32>) -> tenso
 // CHECK-SAME: rock.grid_size = 4 : i32
 // CHECK: rock.load_marker {{.*}} -> tensor<2x1024xf16>
 func.func @half_precision(%arg0: tensor<8192xf16>, %out: tensor<8xf16>) -> tensor<8xf16>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #f16_view : tensor<8192xf16> to tensor<8x1024xf16>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf16> -> tensor<8x1xf16>
   %1 = rock.transform %0 by #f16_drop : tensor<8x1xf16> to tensor<8xf16>
@@ -88,7 +88,7 @@ func.func @half_precision(%arg0: tensor<8192xf16>, %out: tensor<8xf16>) -> tenso
 // CHECK: rock.load_marker {{.*}} -> tensor<2x512xf32>
 // CHECK: rock.blockwise_reduce sum {{.*}} : tensor<2x512xf32> -> tensor<2xf32>
 func.func @padded_both_axes(%arg0: tensor<30000xf32>, %out: tensor<100xf32>) -> tensor<100xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #pad_view : tensor<30000xf32> to tensor<100x300xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<100x300xf32> -> tensor<100x1xf32>
   %1 = rock.transform %0 by #pad_drop : tensor<100x1xf32> to tensor<100xf32>
@@ -108,7 +108,7 @@ func.func @padded_both_axes(%arg0: tensor<30000xf32>, %out: tensor<100xf32>) -> 
 // CHECK: rock.transform {{.*}}Merge{2, 4}
 // CHECK: rock.load_marker {{.*}} -> tensor<2x512xf32>
 func.func @rank3(%arg0: tensor<4096xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #rank3_view : tensor<4096xf32> to tensor<2x4x512xf32>
   %0 = rock.reduce sum %a {axis = 2 : index} : tensor<2x4x512xf32> -> tensor<2x4x1xf32>
   %1 = rock.transform %0 by #rank3_drop : tensor<2x4x1xf32> to tensor<8xf32>
@@ -127,9 +127,10 @@ func.func @rank3(%arg0: tensor<4096xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
 // CHECK-SAME: rock.grid_size = 2 : i32
 // CHECK: rock.load_marker {{.*}} -> tensor<4x1024xf32>
 func.func @pinned_params(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 4, colsPerBlock = 1024, numWaves = 4, numStages = 2>} {
   %a = rock.transform %arg0 by #pinned_view : tensor<8192xf32> to tensor<8x1024xf32>
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 4, colsPerBlock = 1024, numWaves = 4>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #pinned_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
@@ -148,7 +149,7 @@ func.func @pinned_params(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor
 // CHECK: %[[SUM:.*]] = arith.addf {{.*}} : tensor<1x1024xf32>
 // CHECK: rock.blockwise_reduce sum %[[SUM]]
 func.func @pre_reduce_fusion(%arg0: tensor<8192xf32>, %arg1: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #fused_view : tensor<8192xf32> to tensor<8x1024xf32>
   %b = rock.transform %arg1 by #fused_view : tensor<8192xf32> to tensor<8x1024xf32>
   %s = arith.addf %a, %b : tensor<8x1024xf32>
@@ -194,7 +195,7 @@ func.func @not_a_reduce_kernel(%arg0: tensor<8x1024xf32>) -> tensor<8x1xf32> {
 // CHECK: rock.blockwise_reduce sum %[[LOOP]] {axis = 1 : index} : tensor<1x2048xf32> -> tensor<1xf32>
 // CHECK-NOT: rock.blockwise_reduce
 func.func @looped(%arg0: tensor<32768xf32>, %arg1: tensor<32768xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
   %b = rock.transform %arg1 by #wide_view : tensor<32768xf32> to tensor<4x8192xf32>
   %s = arith.addf %a, %b : tensor<4x8192xf32>
@@ -216,7 +217,7 @@ func.func @looped(%arg0: tensor<32768xf32>, %arg1: tensor<32768xf32>, %out: tens
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step
 // CHECK-SAME: iter_args(%{{.*}} = %{{.*}}) -> (tensor<1x2048xf32>)
 func.func @looped_padded(%arg0: tensor<10000xf32>, %out: tensor<2xf32>) -> tensor<2xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm} {
   %a = rock.transform %arg0 by #odd_view : tensor<10000xf32> to tensor<2x5000xf32>
   %0 = rock.reduce sum %a {axis = 1 : index} : tensor<2x5000xf32> -> tensor<2x1xf32>
   %1 = rock.transform %0 by #odd_drop : tensor<2x1xf32> to tensor<2xf32>
@@ -236,10 +237,132 @@ func.func @looped_padded(%arg0: tensor<10000xf32>, %out: tensor<2xf32>) -> tenso
 // CHECK: scf.for %{{.*}} to %[[UB]]
 // CHECK-SAME: -> (tensor<1x256xf32>)
 func.func @pinned_params_force_loop(%arg0: tensor<8192xf32>, %out: tensor<8xf32>) -> tensor<8xf32>
-    attributes {rock.kernel, rock.reduce} {
+    attributes {rock.kernel, rock.nongemm,
+                rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 256, numWaves = 4, numStages = 2>} {
   %a = rock.transform %arg0 by #pin_view : tensor<8192xf32> to tensor<8x1024xf32>
-  %0 = rock.reduce sum %a {axis = 1 : index, params = #rock.reduce_params<rowsPerBlock = 1, colsPerBlock = 256, numWaves = 4>} : tensor<8x1024xf32> -> tensor<8x1xf32>
+  %0 = rock.reduce sum %a {axis = 1 : index} : tensor<8x1024xf32> -> tensor<8x1xf32>
   %1 = rock.transform %0 by #pin_drop : tensor<8x1xf32> to tensor<8xf32>
   %2 = rock.store %1 to %out by set : tensor<8xf32> -> tensor<8xf32> to tensor<8xf32>
   return %2 : tensor<8xf32>
+}
+
+// -----
+
+// A kernel with no reduce is a map: one row holding every element, so the
+// whole tile budget goes to the columns and `rowsPerBlock` is 1. At f32 on a
+// 64-lane wave that budget is `4 waves * 64 lanes * 4 elements = 1024`, which
+// this input exceeds, so the grid takes four blocks of 1024 rather than a
+// loop: the chunks of a map are independent.
+// CHECK-LABEL: func.func @map_tiled_by_the_grid
+// CHECK-SAME: rock.grid_size = 4 : i32
+// CHECK-SAME: rock.nongemm_params = #rock.nongemm_params<rowsPerBlock = 1, colsPerBlock = 1024>
+// CHECK: %[[BID:.*]] = tt.get_program_id x
+// CHECK-DAG: %[[A:.*]] = rock.load_marker %arg0 views {{.*}}[%[[BID]]] {{.*}} -> tensor<1024xf32>
+// CHECK-DAG: %[[B:.*]] = rock.load_marker %arg1 views {{.*}}[%[[BID]]] {{.*}} -> tensor<1024xf32>
+// CHECK: %[[ADD:.*]] = arith.addf {{.*}} : tensor<1024xf32>
+// CHECK: %[[SM:.*]] = rock.store_marker %[[ADD]] {{.*}}[%[[BID]]] : tensor<1024xf32> -> tensor<4096xf32>
+// CHECK: rock.store %[[SM]]
+// CHECK-NOT: scf.for
+func.func @map_tiled_by_the_grid(%arg0: tensor<4096xf32>, %arg1: tensor<4096xf32>, %dest: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.addf %arg0, %arg1 : tensor<4096xf32>
+  %1 = rock.store %0 to %dest by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
+  return %1 : tensor<4096xf32>
+}
+
+// -----
+
+// A map smaller than a whole tile shrinks to fit it, rather than padding a
+// full tile's worth of masked lanes it has no work for. One block runs, with
+// the inputs and the destination padded up to the power of two the tile has
+// to be.
+// CHECK-LABEL: func.func @map_padded_to_one_tile
+// CHECK-SAME: rock.grid_size = 1 : i32
+// CHECK-SAME: colsPerBlock = 16
+// CHECK-DAG: rock.transform %arg0 by {{.*}}Pad{0, 4}
+// CHECK-DAG: rock.transform %arg1 by {{.*}}Pad{0, 4}
+// CHECK: arith.addf {{.*}} : tensor<16xf32>
+// CHECK: rock.store {{.*}} : tensor<16xf32> -> tensor<12xf32> to tensor<16xf32>
+func.func @map_padded_to_one_tile(%arg0: tensor<12xf32>, %arg1: tensor<12xf32>, %dest: tensor<12xf32>) -> tensor<12xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.addf %arg0, %arg1 : tensor<12xf32>
+  %1 = rock.store %0 to %dest by set : tensor<12xf32> -> tensor<12xf32> to tensor<12xf32>
+  return %1 : tensor<12xf32>
+}
+
+// -----
+
+// A multi-dimensional map is flattened: the grid covers its elements, not its
+// shape.
+// CHECK-LABEL: func.func @map_flattens_a_2d_kernel
+// CHECK-SAME: rock.grid_size = 2 : i32
+// CHECK-DAG: rock.transform %arg0 by {{.*}}Merge{8, 256}
+// CHECK: rock.load_marker {{.*}} -> tensor<1024xf32>
+// CHECK: math.absf {{.*}} : tensor<1024xf32>
+func.func @map_flattens_a_2d_kernel(%arg0: tensor<8x256xf32>, %dest: tensor<8x256xf32>) -> tensor<8x256xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = math.absf %arg0 : tensor<8x256xf32>
+  %1 = rock.store %0 to %dest by set : tensor<8x256xf32> -> tensor<8x256xf32> to tensor<8x256xf32>
+  return %1 : tensor<8x256xf32>
+}
+
+// -----
+
+// The tile is sized against the widest type the kernel touches, so these f16
+// inputs get the f32 result's 1024-element tile rather than the 2048 their
+// own width would ask for: a thread holding 2048 f16 values holds just as
+// many f32 ones after the extend.
+// CHECK-LABEL: func.func @map_sized_by_the_widest_type
+// CHECK-SAME: colsPerBlock = 1024
+// CHECK: rock.load_marker {{.*}} -> tensor<1024xf16>
+// CHECK: arith.extf {{.*}} : tensor<1024xf16> to tensor<1024xf32>
+func.func @map_sized_by_the_widest_type(%arg0: tensor<4096xf16>, %dest: tensor<4096xf32>) -> tensor<4096xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %0 = arith.extf %arg0 : tensor<4096xf16> to tensor<4096xf32>
+  %1 = rock.store %0 to %dest by set : tensor<4096xf32> -> tensor<4096xf32> to tensor<4096xf32>
+  return %1 : tensor<4096xf32>
+}
+
+// -----
+
+// A function without the marker belongs to another pipeline and is left
+// alone, reduce or no reduce.
+// CHECK-LABEL: func.func @unmarked_map
+// CHECK-NOT: rock.grid_size
+// CHECK-NOT: tt.get_program_id
+func.func @unmarked_map(%arg0: tensor<256xf32>, %dest: tensor<256xf32>) -> tensor<256xf32>
+    attributes {rock.kernel} {
+  %0 = math.absf %arg0 : tensor<256xf32>
+  %1 = rock.store %0 to %dest by set : tensor<256xf32> -> tensor<256xf32> to tensor<256xf32>
+  return %1 : tensor<256xf32>
+}
+
+// -----
+
+// A `Broadcast` along the reduced axis, the shape `x - mean` takes once the
+// mean has been reduced out of it. Every lane of a row reads the same element
+// of that input, which is uniform rather than strided: it says nothing about
+// the tile, which the input that does vary along the axis decides. One load
+// marker is still emitted per leaf, each on its own view.
+#bcast_in = #rock.transform_map<affine_map<(d0, d1) -> (d0 * 512 + d1)> by [<Unmerge{4, 512} ["row", "col"] at [0, 1] -> ["flat"] at [0]>] bounds = [4, 512] -> [2048]>
+#bcast_rows = #rock.transform_map<affine_map<(d0, d1) -> (d0)> by [<Unmerge{4} ["row"] at [0] -> ["flat"] at [0]>, <AddDim{1} ["unit"] at [1] -> [] at []>] bounds = [4, 1] -> [4]>
+#bcast_spread = #rock.transform_map<affine_map<(d0, d1) -> (d0, 0)> by [<PassThrough ["row"] at [0] -> ["row"] at [0]>, <Broadcast{1} ["col"] at [1] -> ["col"] at [1]>] bounds = [4, 512] -> [4, 1]>
+#bcast_drop = #rock.transform_map<affine_map<(d0) -> (d0, 0)> by [<Merge{4, 1} ["row"] at [0] -> ["d0", "d1"] at [0, 1]>] bounds = [4] -> [4, 1]>
+
+// CHECK-LABEL: func.func @broadcast_along_reduced_axis
+// CHECK-SAME: rock.grid_size = 2 : i32
+// CHECK-DAG: rock.load_marker {{.*}} -> tensor<2x512xf32>
+// CHECK-DAG: rock.load_marker {{.*}} -> tensor<2x512xf32>
+// CHECK: arith.subf {{.*}} : tensor<2x512xf32>
+// CHECK: rock.blockwise_reduce sum {{.*}} : tensor<2x512xf32> -> tensor<2xf32>
+func.func @broadcast_along_reduced_axis(%arg0: tensor<2048xf32>, %arg1: tensor<4xf32>, %out: tensor<4xf32>) -> tensor<4xf32>
+    attributes {rock.kernel, rock.nongemm} {
+  %a = rock.transform %arg0 by #bcast_in : tensor<2048xf32> to tensor<4x512xf32>
+  %r = rock.transform %arg1 by #bcast_rows : tensor<4xf32> to tensor<4x1xf32>
+  %b = rock.transform %r by #bcast_spread : tensor<4x1xf32> to tensor<4x512xf32>
+  %s = arith.subf %a, %b : tensor<4x512xf32>
+  %0 = rock.reduce sum %s {axis = 1 : index} : tensor<4x512xf32> -> tensor<4x1xf32>
+  %1 = rock.transform %0 by #bcast_drop : tensor<4x1xf32> to tensor<4xf32>
+  %2 = rock.store %1 to %out by set : tensor<4xf32> -> tensor<4xf32> to tensor<4xf32>
+  return %2 : tensor<4xf32>
 }

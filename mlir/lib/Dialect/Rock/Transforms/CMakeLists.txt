@@ -9,11 +9,9 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RollDotK.cpp
   DetectFlashDecoding.cpp
   FoldBroadcast.cpp
-  ElementwiseUtils.cpp
+  NonGemmUtils.cpp
   GemmToGridwise.cpp
   AttnToGridwise.cpp
-  ElementwiseToGridwise.cpp
-  GridwiseElementwiseToBlockwise.cpp
   GridwiseGemmToBlockwise.cpp
   GridwiseAttnToBlockwise.cpp
   DecomposeNonPow2Tiles.cpp
@@ -46,12 +44,10 @@ add_rocmlir_dialect_library(MLIRRockTransforms
   RegularizeInput.cpp
   LowerLoads.cpp
   LowerReduce.cpp
-  LowerReduceToBlockwise.cpp
+  LowerNonGemmToBlockwise.cpp
   LowerStores.cpp
   RegularizeInterGemmFusion.cpp
-  RegularizeElementwise.cpp
-  ReduceUtils.cpp
-  RegularizeReduce.cpp
+  RegularizeNonGemm.cpp
   RegularizeOutput.cpp
   RockFlattenTosaFuncArgs.cpp
   RockPrepareLLVM.cpp
