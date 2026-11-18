@@ -502,11 +502,30 @@ mis-bucketing whichever family lands inside it next.
 
 The file `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` lists all LLVM/MLIR and rocMLIR libraries that get merged into `librockCompiler.a`. A Triton bump can add or remove library dependencies, so this file must be regenerated after a successful build.
 
-From the **build directory**, run:
+From the **build directory**, after a successful build, run:
 
 ```bash
-perl ../mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
+../scripts/get_fat_library_deps.sh > ../mlir/tools/rocmlir-lib/librockcompiler_deps.cmake
 ```
+
+The script shells out to `ninja -t deps bin/mlir-mixr-fullc-test`, so it must run
+with the build directory as the working directory (that is where `build.ninja`
+lives), and the build must have completed, since it reads the dependency closure
+ninja recorded for that link step. The archive paths it gets back are relative to
+the build directory, and it splits them into `__mlir_libs` (from
+`external/llvm-project/llvm/lib/`) and `__rocmlir_libs` (from `lib/`).
+
+Two things to keep in mind when reviewing the regenerated file:
+
+- The `LLVMX86*` backend libraries are **deliberately filtered out**. Host
+  codegen is only needed by the e2e / JIT-runner path, which `MLIR_ENABLE_ROCM_RUNNER`
+  builds pull in on their own; `librockCompiler.a` only ever targets AMDGPU. If a
+  regeneration puts `LLVMX86CodeGen` & co. back into the list, something started
+  linking the X86 backend into `TritonToHsacoTranslation` again -- fix that
+  instead of committing the entries.
+- The list is sorted with plain `sort`, so the ordering follows the ambient
+  locale. Regenerate with the same locale the file was last generated under
+  (`en_US.UTF-8`) or the diff will be pure reordering noise.
 
 ## Step 7: Env variables
 Search for `triton::tools::getStrEnv` in rocmlirTriton and make sure that the variable names are up to date since they might have been renamed or removed during Triton bump.
@@ -762,7 +781,7 @@ Use this checklist to track progress:
 - [ ] Reconcile downstream-only commits on the new external branch tips (drop upstreamed commits, keep required ones)
 - [ ] Keep architecture removals/renames/reclassification in sync with upstream (`AmdArchDb.cpp`, tests, perf scripts; see section 5.5), e.g. `GCN5_1`/`CDNA1` removal and `GFX1250 -> CDNA5`
 - [ ] Build project with `cmake.sh`
-- [ ] Regenerate `librockcompiler_deps.cmake` with `get_fat_library_deps_list.pl`
+- [ ] Regenerate `librockcompiler_deps.cmake` with `scripts/get_fat_library_deps.sh` (from the build directory; check that no `LLVMX86*` entries reappeared)
 - [ ] Regenerate the LDS blacklist (`generateLDSBlacklist.py` from `build/bin`), rebuild, and commit the updated `.inc`
 - [ ] Run tests with `cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir`
 - [ ] All tests pass
@@ -837,7 +856,7 @@ those as paths inside your external repo checkouts: `$TRITON_REPO` /
 | Triton pass bindings | `external/triton/third_party/amd/python/triton_amd.cc` |
 | Triton AccelerateMatmul | `external/triton/third_party/amd/lib/TritonAMDGPUTransforms/AccelerateAMDMatmul.cpp` |
 | Build script | `cmake.sh` |
-| Fat library deps generator | `mlir/utils/jenkins/static-checks/get_fat_library_deps_list.pl` |
+| Fat library deps generator | `scripts/get_fat_library_deps.sh` |
 | Fat library deps list | `mlir/tools/rocmlir-lib/librockcompiler_deps.cmake` |
 | LDS blacklist generator | `mlir/utils/performance/generateLDSBlacklist.py` |
 | LDS blacklist table | `mlir/include/mlir/Dialect/Rock/Tuning/LdsBlacklistPerfconfigs.inc` |
