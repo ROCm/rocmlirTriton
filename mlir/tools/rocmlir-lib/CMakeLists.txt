@@ -4,6 +4,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
   # /opt/rocm stays as the Linux fallback.
   find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
+  include(GNUInstallDirs)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -50,14 +51,14 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       set(__dlfcn_target dl)
     elseif(TARGET dlfcn)
       set(__dlfcn_target dlfcn)
-      rocm_install(FILES $<TARGET_FILE:dlfcn> DESTINATION lib)
+      rocm_install(FILES $<TARGET_FILE:dlfcn> DESTINATION ${CMAKE_INSTALL_LIBDIR})
     else()
       message(FATAL_ERROR "No dlfcn-win32 target found for the rockCompiler export")
     endif()
     target_link_libraries(${LIBRARY_NAME}
         INTERFACE
             $<BUILD_INTERFACE:${__dlfcn_target}>
-            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__dlfcn_target}.lib>)
+            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/${__dlfcn_target}.lib>)
     unset(__dlfcn_target)
 
     # Triton builds as separate static libraries on Windows, so propagate its
