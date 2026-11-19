@@ -2925,8 +2925,14 @@ def main(args=None):
         chip = perfRunner.get_chip()
     num_cu = (parsed_args.target_num_cu
               if parsed_args.target_num_cu is not None else perfRunner.get_num_cu(chip))
-    num_chiplets = (parsed_args.target_num_chiplets if parsed_args.target_num_chiplets is not None
-                    else amd_arch_db.infer_num_chiplets(chip, num_cu))
+    # A cross-compile target must not inherit this machine's partition mode.
+    if parsed_args.target_num_chiplets is not None:
+        num_chiplets = parsed_args.target_num_chiplets
+    elif parsed_args.target_arch is None and parsed_args.target_num_cu is None:
+        num_chiplets = amd_arch_db.resolve_num_chiplets(chip, num_cu,
+                                                        perfRunner.query_compute_partition())
+    else:
+        num_chiplets = amd_arch_db.infer_num_chiplets(chip, num_cu)
 
     # Handle stdin for configs file
     stdin_temp_file = None
