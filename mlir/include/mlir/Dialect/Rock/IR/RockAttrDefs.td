@@ -97,7 +97,11 @@ def StoreMethod : Rock_I32Enum<"StoreMethod",
     "What operation should be used to write data to memory",
     [StoreMethod_Set, StoreMethod_AtomicAdd, StoreMethod_AtomicMax]>;
 
-def StoreMethodAttr : EnumAttr<Rock_Dialect, StoreMethod, "StoreMethod">;
+def StoreMethodAttr : EnumAttr<Rock_Dialect, StoreMethod, "StoreMethod"> {
+  // Keep the legacy `#rock<StoreMethod foo>` spelling; upstream's default
+  // EnumAttr format (`#rock.StoreMethod<foo>`) would churn every test.
+  let assemblyFormat = "$value";
+}
 
 /// ReduceMethod
 
@@ -108,7 +112,11 @@ def ReduceMethod : Rock_I32Enum<"ReduceMethod",
     "What operation should be used for the reduction",
     [ReduceMethod_Sum, ReduceMethod_Max]>;
 
-def ReduceMethodAttr : EnumAttr<Rock_Dialect, ReduceMethod, "ReduceMethod">;
+def ReduceMethodAttr : EnumAttr<Rock_Dialect, ReduceMethod, "ReduceMethod"> {
+  // Keep the legacy `#rock<ReduceMethod foo>` spelling; upstream's default
+  // EnumAttr format (`#rock.ReduceMethod<foo>`) would churn every test.
+  let assemblyFormat = "$value";
+}
 
 /// CacheModifier
 ///
@@ -156,7 +164,11 @@ def CacheModifier
                     CacheModifier_WB, CacheModifier_CS, CacheModifier_WT,
                     CacheModifier_CV]>;
 
-def CacheModifierAttr : EnumAttr<Rock_Dialect, CacheModifier, "CacheModifier">;
+def CacheModifierAttr : EnumAttr<Rock_Dialect, CacheModifier, "CacheModifier"> {
+  // Keep the legacy `#rock<CacheModifier foo>` spelling; upstream's default
+  // EnumAttr format (`#rock.CacheModifier<foo>`) would churn every test.
+  let assemblyFormat = "$value";
+}
 
 /// TransformAttr
 def Rock_TransformAttr : Rock_Attr<"Transform"> {

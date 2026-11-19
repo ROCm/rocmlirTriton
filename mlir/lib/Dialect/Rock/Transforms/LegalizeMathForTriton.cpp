@@ -56,6 +56,7 @@ namespace {
 /// docs/bump_triton_version.md section 5.4.2).
 constexpr StringLiteral kOcmlTanhF32 = "__ocml_tanh_f32";
 constexpr StringLiteral kOcmlTanhF64 = "__ocml_tanh_f64";
+constexpr StringLiteral kTritonFastTanhF32 = "__triton_hip_fast_tanhf";
 constexpr StringLiteral kOcmlPowF32 = "__ocml_pow_f32";
 constexpr StringLiteral kOcmlPowF64 = "__ocml_pow_f64";
 
@@ -150,10 +151,11 @@ static LogicalResult rewriteViaOcml(OpTy op, PatternRewriter &rewriter,
 
   SmallVector<Value> args;
   for (Value operand : op->getOperands())
-    args.push_back(
-        widen ? arith::ExtFOp::create(rewriter, loc, computeTy, operand)
-                    .getResult()
-              : operand);
+    args.push_back(widen ? arith::ExtFOp::create(rewriter, loc, computeTy,
+                                                 operand,
+                                                 arith::ExtFOp::Properties{})
+                               .getResult()
+                         : operand);
 
   // Empty libname and libpath match what `core.extern_elementwise("", "", ...)`
   // emits in the Triton frontend: the symbol is resolved either by an AMD
@@ -189,7 +191,8 @@ struct TanhLowering : public OpRewritePattern<math::TanhOp> {
       rewriter.replaceOp(op, emitApproxTanh(rewriter, loc, op.getOperand()));
       return success();
     }
-    Value in = arith::ExtFOp::create(rewriter, loc, computeTy, op.getOperand())
+    Value in = arith::ExtFOp::create(rewriter, loc, computeTy, op.getOperand(),
+                                     arith::ExtFOp::Properties{})
                    .getResult();
     rewriter.replaceOpWithNewOp<arith::TruncFOp>(
         op, origTy, emitApproxTanh(rewriter, loc, in));
@@ -202,10 +205,18 @@ struct TanhLowering : public OpRewritePattern<math::TanhOp> {
     auto elemTy = dyn_cast<FloatType>(getElementTypeOrSelf(origTy));
 
     // Where Triton rewrites the call into `v_tanh_f32` it is both the fastest
-    // and the most accurate option, so it wins even under fast math. Without
-    // fast math every type takes the call as well, that being the point of the
-    // flag, though there it stays a real library call.
-    if (lowersToNativeInst || !allowApprox || !elemTy)
+    // and the most accurate option, so it wins even under fast math. Only the
+    // fast-tanh spelling gets that rewrite; f64 has no instruction and keeps
+    // the library call.
+    if (lowersToNativeInst)
+      return rewriteViaOcml(op, rewriter, kTritonFastTanhF32, kOcmlTanhF64);
+
+    // Without fast math every type takes the call as well, that being the
+    // point of the flag, though there it has to stay a real library call: on a
+    // target without the instruction the fast spelling expands inline into the
+    // same five-op identity emitApproxTanh emits, which is the accuracy the
+    // flag is there to decline.
+    if (!allowApprox || !elemTy)
       return rewriteViaOcml(op, rewriter, kOcmlTanhF32, kOcmlTanhF64);
 
     // Narrower than f32: approximate, evaluated at f32 rather than at the op's

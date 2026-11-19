@@ -29,8 +29,8 @@ the author can look up the rationale.
   [`flake8`](../.flake8); format with `yapf -i <files>` and lint with
   `flake8 <files>` before committing.
 - rocmlirTriton-specific review rules that don't fit the generic
-  LLVM/MLIR tiers (Triton subtree updates, edits to the vendored
-  `external/triton` / `external/llvm-project` trees, `rock::*`
+  LLVM/MLIR tiers (Triton/LLVM pin bumps, downstream commits carried on
+  the external `rmt-*` branches, `rock::*`
   hardware-feature detection, bridge passes, fat-library + MIGraphX
   coordination, and the **rocMLIR back-port check** that flags
   shared-with-rocMLIR diffs) live in dedicated sections at the end of
@@ -44,7 +44,7 @@ the author can look up the rationale.
   repo but treat it as if it could be open-sourced at any time; see the
   project's confidentiality policy.) It IS fine to reference unreleased
   `gfx*` IDs only when they are already mentioned upstream (in the
-  vendored Triton subtree, the LLVM AMDGPU backend, or upstream rocMLIR).
+  pinned Triton tree, the LLVM AMDGPU backend, or upstream rocMLIR).
 - Internal-only hyperlinks or URLs in code, comments, commits, docs, test
   data, or metadata, including internal Jira/OnTrack, Confluence,
   source-control repositories, and internal network hosts. Keep non-sensitive
@@ -111,9 +111,8 @@ the author can look up the rationale.
   MIGraphX `librockCompiler` fat library depends on).
 - License header missing on a new downstream-authored `.cpp`, `.h`, `.py`, or
   `.mlir` file. For `.mlir`, inspect every file added by a downstream commit,
-  including first-party files and files added by local `[EXTERNAL]` commits
-  under vendored trees. Exclude files introduced unchanged by an upstream
-  subtree import/bump. Use the provenance-aware header from the License-header
+  including first-party files. Exclude files introduced unchanged from
+  upstream. Use the provenance-aware header from the License-header
   reference below. "We'll fix headers before going public" is not an acceptable
   plan; the headers must already be in place.
 - `TODO` without an issue reference (`TODO(#issue-number)`).
@@ -174,40 +173,40 @@ the author can look up the rationale.
 rocmlirTriton lowers Rock dialect kernels through OpenAI Triton's
 TTIR/TTGIR/LLIR pipeline to AMD GPU code. Several files and conventions
 exist specifically to keep that integration safe and reproducible across
-Triton subtree updates. Apply these checks **in addition to** the
+Triton/LLVM pin bumps. Apply these checks **in addition to** the
 generic Critical / Major / Minor tiers above; the severity of each rule
 is documented inline below.
 
-### Vendored Triton / LLVM subtrees (`external/triton`, `external/llvm-project`)
+### Downstream changes to Triton / LLVM (`rmt-*` branches)
 
-`external/triton` and `external/llvm-project` are vendored directly in
-this repo via `git subtree`; downstream edits are committed directly on
-top of the imported upstream trees. `triton-patches/*.patch` and
-`llvm-patches/*.patch` are provenance and refresh aids for the next
-upstream merge, not build-time inputs. Consequently:
+Triton and LLVM/MLIR are no longer vendored in this repo: `cmake/triton.cmake`
+fetches them at configure time from pinned branches of ROCm/triton and
+ROCm/llvm-project, and downstream changes to either tree live as commits on
+those `rmt-*` branch tips. Nothing under an `external/` path can appear in a
+rocmlirTriton diff any more, and `triton-patches/` / `llvm-patches/` are no
+longer patch records. Consequently:
 
-- Editing files under `external/triton/` or `external/llvm-project/`
-  directly is expected; do NOT flag the direct edit itself as a
-  violation.
-- **Major** -- a downstream commit that modifies files under
-  `external/triton/` or `external/llvm-project/` does not use a
-  `[EXTERNAL]` commit subject prefix. This rule applies to local
-  downstream fixes in the vendored trees, not upstream import / bump
-  commits; upstream bumps are covered by the next section. Downstream
-  vendored-tree changes should be explicit in the commit history so
-  patch records can be audited against the exact subtree diff.
-- **Major** -- a downstream change to the vendored trees lands WITHOUT a
-  matching patch under `triton-patches/` or `llvm-patches/` and an entry
-  in `triton-patches/triton-patch-content.txt` or
-  `llvm-patches/llvm-patch-content.txt`. The patch must match the
-  corresponding downstream `[EXTERNAL]` commit diff, and the PR
-  description must either link the upstream issue/PR or explain why the
-  change is a permanent fork.
+- **Major** -- a PR adds or edits files under `external/triton/` or
+  `external/llvm-project/`. That is the retired layout; the change belongs on
+  the corresponding `rmt-*` branch, with this repo moving only its pin.
+- **Major** -- a PR moves a pin (`ROCMLIR_TRITON_GIT_BRANCH`,
+  `ROCMLIR_LLVM_GIT_BRANCH`, `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH`) without
+  saying in the description what moved on the branch tips, including which
+  downstream commits were replayed and which were dropped as upstreamed. The
+  pin is the only record this repo keeps of either tree, so the PR description
+  has to carry that audit.
+- **Major** -- a downstream commit a rocmlirTriton mirror depends on is dropped
+  from a branch tip without the dependent mirror being updated. The known ones
+  are listed in [`bump_triton_version.md`](bump_triton_version.md) section 5.3
+  (`copyDiscardableAttrs` in `AccelerateAMDMatmul.cpp`, whose loss silently
+  breaks `rock-set-matmul-output-transpose`).
+- A permanent fork of upstream behaviour still needs the PR description to link
+  the upstream issue/PR or explain why it will not be upstreamed.
 
-### Triton / LLVM subtree updates (upstream bumps)
+### Triton / LLVM pin bumps
 
-When a PR imports a new upstream Triton or LLVM revision into the
-vendored subtrees, apply the review checks from
+When a PR moves the pins to new upstream Triton or LLVM revisions,
+apply the review checks from
 [`bump_triton_version.md`](bump_triton_version.md). Missing required bump
 artifacts, such as replication-point audit notes,
 `librockcompiler_deps.cmake` regeneration, or re-evaluation of the
@@ -241,7 +240,7 @@ E2E coverage..." Major bullet above).
 
 ### Fat library + downstream MIGraphX
 
-The vendored Triton subtree is wired into the `librockCompiler` fat library
+The pinned Triton tree is wired into the `librockCompiler` fat library
 that MIGraphX consumes. Any change that alters the public C-API
 surface, IR ingest/emit shape, or default Triton-pipeline behavior is
 a downstream coordination point with MIGraphX -- the PR description
@@ -283,8 +282,7 @@ rocmlirTriton diff.
 
 ### rocmlirTriton-only (no back-port needed)
 
-- `external/triton/`, `external/llvm-project/`, `triton-patches/`,
-  `llvm-patches/`, `cmake/triton.cmake`, `cmake.sh`.
+- `cmake/triton.cmake` (including the Triton/LLVM pins), `cmake.sh`.
 - The bridge-pass source files in `mlir/lib/Dialect/Rock/Transforms/`:
   `RockToTTIR.cpp` (pass `RockToTTIRPass`), `TensorToTritonPtr.cpp`
   (pass `RockTensorToTritonPtrPass`), `SerializeHostFuncs.cpp` (pass
@@ -350,7 +348,7 @@ provenance. First-party rocmlirTriton files:
 //
 ```
 
-Files added by local `[EXTERNAL]` commits under `external/triton/`:
+Files a downstream commit adds to the Triton (`rmt-*`) branch:
 
 ```
 // Copyright Advanced Micro Devices, Inc.
@@ -358,8 +356,8 @@ Files added by local `[EXTERNAL]` commits under `external/triton/`:
 //
 ```
 
-Files added by local `[EXTERNAL]` commits under `external/llvm-project/` use
-the standard LLVM/MLIR attribution and Apache SPDX header:
+Files a downstream commit adds to the LLVM (`rmt-core-*` / `rmt-amd-*`)
+branches use the standard LLVM/MLIR attribution and Apache SPDX header:
 
 ```
 // Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -375,5 +373,5 @@ Checklist on every new downstream-authored file:
 - SPDX identifier matches the governing source tree:
   `Apache-2.0 WITH LLVM-exception` for rocmlirTriton and LLVM/MLIR files, and
   `MIT` for Triton files.
-- Files introduced unchanged by an upstream subtree import/bump retain their
-  upstream headers and are not stamped as downstream-authored files.
+- Files introduced unchanged from upstream retain their upstream headers and
+  are not stamped as downstream-authored files.

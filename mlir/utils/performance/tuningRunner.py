@@ -1526,7 +1526,7 @@ def tune_config(test_vector: str,
         f"--warmup={options.warmup_ms}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
-        f"--show-all-measurements={options.debug}",
+        f"--show-all-measurements={str(options.debug).lower()}",
         f"--num-compile-threads={num_compile_threads}",
         f"--perf-config-timeout={options.perf_config_timeout}",
         f"--gpu-run-timeout={options.gpu_run_timeout}",
@@ -2338,7 +2338,7 @@ def run_benchmark_artifacts(ctx: TuningContext, status_only: bool = False) -> bo
         f"--warmup={options.warmup_ms}",
         "--use-median",
         f"--sleep-us={SLEEP_US}",
-        f"--show-all-measurements={options.debug}",
+        f"--show-all-measurements={str(options.debug).lower()}",
         f"--gpu-run-timeout={options.gpu_run_timeout}",
     ]
     if options.flush_last_level_cache:

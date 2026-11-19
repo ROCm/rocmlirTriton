@@ -336,7 +336,8 @@ LogicalResult ConvConverter<ConvType>::matchAndRewrite(
                          RankedTensorType::get(
                              cast<ShapedType>(filter.getType()).getShape()[0],
                              newOutElementTy)),
-                     inputZp, weightZp});
+                     inputZp, weightZp},
+          tosa::Conv3DOp::Properties{});
     }
 
     break;

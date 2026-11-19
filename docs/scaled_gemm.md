@@ -33,5 +33,8 @@ TT_Float = {F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64}
 ## References
 
 - [OCP Microscaling Formats Specification](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf)
-- Triton's `TT_Float` definition: `external/triton/include/triton/Dialect/Triton/IR/TritonTypes.td`
-- `tt.dot_scaled` definition: `external/triton/include/triton/Dialect/Triton/IR/TritonOps.td`
+- Triton's `TT_Float` definition: `include/triton/Dialect/Triton/IR/TritonTypes.td`
+- `tt.dot_scaled` definition: `include/triton/Dialect/Triton/IR/TritonOps.td`
+
+  Both paths are inside the Triton tree, which `cmake/triton.cmake` fetches to
+  `build/_deps/triton-src/`.

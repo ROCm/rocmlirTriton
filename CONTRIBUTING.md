@@ -34,15 +34,16 @@ apply the changes, or fix the formatting manually.
    cd build && ninja check-mlir && ninja check-triton-lit-tests && ninja check-rocmlir
    ```
    `check-rocmlir` covers this project's tests and runs on every PR. The other two
-   cover the vendored trees we patch: `check-mlir` the upstream MLIR suite in
-   `external/llvm-project` (see `llvm-patches/`), `check-triton-lit-tests` Triton's
-   own lit suite in `external/triton` (see `triton-patches/`). CI runs both in
-   nightly only, so run `check-triton-lit-tests` yourself whenever you touch
-   `external/triton` or add a patch record.
+   cover the Triton and LLVM/MLIR trees that `cmake/triton.cmake` fetches:
+   `check-mlir` the upstream MLIR suite, `check-triton-lit-tests` Triton's own lit
+   suite. CI runs both in nightly only, so run them yourself whenever you move a
+   pin or carry a downstream commit on one of the `rmt-*` branches (see
+   [docs/bump_triton_version.md](docs/bump_triton_version.md)).
 5. Open a PR against `develop`. Describe *what* changed and *why*; link any related issue.
 6. Ensure CI passes and request review from the relevant [CODEOWNERS](.github/CODEOWNERS).
    CI also runs security scans (bandit, gitleaks, trivy and zizmor) through
-   the shared ROCm security workflow, skipping the vendored `external/` trees.
+   the shared ROCm security workflow. They see only this repo's own sources,
+   since Triton and LLVM/MLIR are fetched into the build tree.
    Their configs live in [`.github/scan_tools_configs/`](.github/scan_tools_configs/).
    If a scan flags a false positive, add a narrowly scoped, commented
    suppression as described at the top of the matching config, rather than

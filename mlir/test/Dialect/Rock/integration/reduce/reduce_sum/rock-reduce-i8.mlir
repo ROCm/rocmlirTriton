@@ -18,6 +18,6 @@ func.func @test_reduce_i8(%arg0: tensor<1x6x1xi8>, %arg1: tensor<1x1x40xi8>) -> 
   %b_zp = "tosa.const"() <{values = dense<0> : tensor<1xi8>}> : () -> tensor<1xi8>
   %gemm = "tosa.matmul"(%arg0, %arg1, %a_zp, %b_zp) {acc_type = i32} : (tensor<1x6x1xi8>, tensor<1x1x40xi8>, tensor<1xi8>, tensor<1xi8>) -> tensor<1x6x40xi32>
   %trunc = "tosa.cast"(%gemm) : (tensor<1x6x40xi32>) -> tensor<1x6x40xi8>
-  %reduced = "tosa.reduce_sum"(%trunc) {axis = 2 : i32} : (tensor<1x6x40xi8>) -> tensor<1x6x1xi8>
+  %reduced = "tosa.reduce_sum"(%trunc) <{axis = 2 : i32}> : (tensor<1x6x40xi8>) -> tensor<1x6x1xi8>
   return %reduced : tensor<1x6x1xi8>
 }

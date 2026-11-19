@@ -1,6 +1,6 @@
 ---
 name: review-rocmlir-triton-pr
-description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the vendored Triton and Triton-pinned LLVM integration (Rock->TTIR->TTGIR->LLIR pipeline, downstream patch records, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
+description: Review a rocmlirTriton pull request with deep expertise in MLIR/LLVM coding standards, the Rock dialect, MIGraphX integration, the pinned Triton and Triton-pinned LLVM integration (Rock->TTIR->TTGIR->LLIR pipeline, pin bumps and the downstream commits they replay, hardware-feature detection via rock::*), kernel codegen for AMD GPUs, lit/E2E testing, and the rocmlirTriton CMake build. Use when asked to review a rocmlirTriton PR or check a rocmlirTriton change. Read-only; never posts to GitHub.
 argument-hint: [PR-number]
 agent: general-purpose
 allowed-tools: Read, Grep, Glob
@@ -72,7 +72,7 @@ the workspace is on (`headRefOid` in `meta.json`):
 |------|----------|
 | `/tmp/pr/meta.json` | PR metadata: `title`, `body`, `author`, `baseRefName`, `headRefName`, plus two locally-injected fields. `headRefOid` is the SHA of the pinned checkout in the workspace (force-push defense), and `files` is an array of `{path}` objects describing the same set of changed paths that `diff.patch` covers. |
 | `/tmp/pr/diff.patch` | Unified diff between the merge-base with `baseRefName` and the pinned PR HEAD. Equivalent to GitHub's "Files changed" view for this SHA, but generated locally so it can never disagree with the workspace or with `meta.files` if a force-push lands mid-run. |
-| `/tmp/pr/commits.json` | Commit metadata for the same pinned PR range, as an array of `{sha, subject, paths, diffPath}`. Use it for commit-level rules such as `[EXTERNAL]` subject checks. Read the referenced `diffPath` file only when you need the exact diff for that commit. |
+| `/tmp/pr/commits.json` | Commit metadata for the same pinned PR range, as an array of `{sha, subject, paths, diffPath}`. Use it for rules that need per-commit granularity rather than the squashed PR diff. Read the referenced `diffPath` file only when you need the exact diff for that commit. |
 | `/tmp/pr/checks.json` | CI status: an array of `{name, state, bucket}` covering both the modern Checks API (e.g. GitHub Actions) and the legacy Commit Statuses API (e.g. Azure and Jenkins integrations), so neither category of red CI is silently missed. `bucket` is one of `pass`, `fail`, `pending`, `skipping`, `cancel`. |
 | `/tmp/pr/prev_comments.json` | All existing inline review comments on this PR, in the order the GitHub API returns them. |
 
@@ -192,7 +192,7 @@ Each finding must:
   `std::vector` for small local collections").
 
 Step 4 below applies the rocmlirTriton-specific sections of the same
-file (vendored Triton and Triton-pinned LLVM subtree updates, downstream patch records,
+file (Triton/LLVM pin bumps and the downstream commits they carry,
 `rock::*` hardware-feature detection, bridge passes, fat-library +
 MIGraphX, and the rocMLIR back-port check).
 
@@ -204,13 +204,11 @@ MIGraphX, and the rocMLIR back-port check).
 snapshot step and overlaid into the workspace; see Step 3) documents two
 rocmlirTriton-specific sections that don't fit the generic LLVM/MLIR tiers.
 `docs/bump_triton_version.md` is also injected and overlaid; apply it as the
-detailed source of truth when a PR imports new upstream Triton/LLVM
-revisions or changes downstream patch records:
+detailed source of truth when a PR moves the Triton/LLVM pins:
 
-- **`## rocmlirTriton-specific checks`** -- vendored Triton and Triton-pinned LLVM subtree
-  updates (delegating detailed steps to `docs/bump_triton_version.md`),
-  downstream patch records, `[EXTERNAL]` commit boundaries for
-  `external/triton` / `external/llvm-project` edits, `rock::*`
+- **`## rocmlirTriton-specific checks`** -- Triton/LLVM pin bumps
+  (delegating detailed steps to `docs/bump_triton_version.md`),
+  downstream changes carried on the external `rmt-*` branches, `rock::*`
   hardware-feature detection (vs. `triton::AMD::TargetInfo`), bridge
   passes between Rock and Triton, and fat-library + downstream MIGraphX
   coordination. Each sub-rule documents its severity inline (Major /
@@ -222,23 +220,24 @@ revisions or changes downstream patch records:
   of `meta.files[].path` against the path list there.
 
 Apply both alongside Step 3. Cite the matching section heading in the
-finding body (for example: "rocmlirTriton-specific -- Triton
-subtree updates: `librockcompiler_deps.cmake` not regenerated") so
+finding body (for example: "rocmlirTriton-specific -- Triton / LLVM pin
+bumps: `librockcompiler_deps.cmake` not regenerated") so
 the author can look up the rationale.
 
-For vendored-subtree changes, always read `/tmp/pr/commits.json`:
+Triton and LLVM/MLIR are not vendored in this repo; `cmake/triton.cmake`
+fetches pinned `rmt-*` branches of ROCm/triton and ROCm/llvm-project at
+configure time, so this repo records those trees only through its pins:
 
-- A downstream commit whose `paths` includes a path under
-  `external/triton/` or `external/llvm-project/` must have a subject
-  beginning with `[EXTERNAL]`; otherwise raise a Major finding under
-  "rocmlirTriton-specific checks -- Vendored Triton / LLVM subtrees".
-  Do not flag upstream import / bump commits for lacking `[EXTERNAL]`;
-  those are covered by the Triton / LLVM subtree update checks.
-- If the PR also changes `triton-patches/*.patch` or
-  `llvm-patches/*.patch`, compare those patch-file contents with the
-  relevant downstream `[EXTERNAL]` commit's `diffPath`. A patch record
-  that does not match the corresponding `[EXTERNAL]` commit diff is a
-  Major finding.
+- A `meta.files[].path` under `external/triton/` or `external/llvm-project/`
+  is the retired vendored layout. Raise a Major finding under
+  "rocmlirTriton-specific checks -- Downstream changes to Triton / LLVM":
+  the change belongs on the corresponding `rmt-*` branch.
+- If the diff of `cmake/triton.cmake` moves `ROCMLIR_TRITON_GIT_BRANCH`,
+  `ROCMLIR_LLVM_GIT_BRANCH` or `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH`, the PR
+  description must account for the branch tips -- which downstream commits
+  were replayed and which were dropped as upstreamed. The pin is the only
+  record of either tree that lands here, so a bump without that audit is a
+  Major finding under the same heading.
 
 ---
 
@@ -470,8 +469,8 @@ mkdir -p /tmp/pr/commit_diffs
 while IFS= read -r sha; do
   subject=$(git log -1 --format=%s "$sha")
   diff_path="/tmp/pr/commit_diffs/${sha}.patch"
-  # Compare each commit against its first parent. This preserves the
-  # actual subtree-import diff for merge commits while matching the
+  # Compare each commit against its first parent, which gives the
+  # diff a merge commit actually introduced while matching the
   # normal single-parent commit diff.
   parent=$(git rev-parse "${sha}^1" 2>/dev/null) \
     || parent=$(git hash-object -t tree /dev/null)

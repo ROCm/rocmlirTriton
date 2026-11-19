@@ -29,7 +29,6 @@ namespace rock {
 
 /// Options for Triton to HSACO translation
 struct TritonToHsacoOptions {
-  std::string triple;
   std::string arch;
   std::string features;
   int optLevel;

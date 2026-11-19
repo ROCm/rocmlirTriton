@@ -1537,8 +1537,8 @@ class GemmConfiguration(PerfConfiguration):
             str(self.g), '-m',
             str(self.m), '-k',
             str(self.k), '-n',
-            str(self.n), f"-transA={self.trans_a}", f"-transB={self.trans_b}",
-            f"-transO={self.trans_o}",
+            str(self.n), f"-transA={str(self.trans_a).lower()}",
+            f"-transB={str(self.trans_b).lower()}", f"-transO={str(self.trans_o).lower()}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -1550,9 +1550,9 @@ class GemmConfiguration(PerfConfiguration):
         if self.scale_b_dtype:
             result += f' -scale_b_dtype {self.scale_b_dtype}'
         if self.trans_scale_a:
-            result += f' -transScaleA {str(self.trans_scale_a)}'
+            result += f' -transScaleA {str(self.trans_scale_a).lower()}'
         if self.trans_scale_b:
-            result += f' -transScaleB {str(self.trans_scale_b)}'
+            result += f' -transScaleB {str(self.trans_scale_b).lower()}'
         if self.quant_block_size is not None:
             result += f' -quantBlockSize {self.quant_block_size}'
 
@@ -1867,13 +1867,13 @@ class ConvGemmConfiguration(PerfConfiguration):
             '-operation', 'conv_gemm', '-t', self.datatype, '--arch', self.arch,
             f'--num_cu={self.num_cu}', f'--num_chiplets={self.num_chiplets}',
             f'--fil_layout={self.filter_layout}', f'--in_layout={self.input_layout}',
-            f'--transC={self.trans_c}', f'--transO={self.trans_o}', f'--batchsize={self.n}',
-            f'--in_channels={self.c}', f'--in_h={self.hi}', f'--in_w={self.wi}',
-            f'--out_channels={self.k}', f'--fil_h={self.y}', f'--fil_w={self.x}',
-            f'--dilation_h={self.dilation_h}', f'--dilation_w={self.dilation_w}',
-            f'--conv_stride_h={self.conv_stride_h}', f'--conv_stride_w={self.conv_stride_w}',
-            f'--padding_h={self.padding_h}', f'--padding_w={self.padding_w}',
-            f'--groupsize={self.group}', f'--gemmO={self.o}',
+            f'--transC={str(self.trans_c).lower()}', f'--transO={str(self.trans_o).lower()}',
+            f'--batchsize={self.n}', f'--in_channels={self.c}', f'--in_h={self.hi}',
+            f'--in_w={self.wi}', f'--out_channels={self.k}', f'--fil_h={self.y}',
+            f'--fil_w={self.x}', f'--dilation_h={self.dilation_h}',
+            f'--dilation_w={self.dilation_w}', f'--conv_stride_h={self.conv_stride_h}',
+            f'--conv_stride_w={self.conv_stride_w}', f'--padding_h={self.padding_h}',
+            f'--padding_w={self.padding_w}', f'--groupsize={self.group}', f'--gemmO={self.o}',
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -2090,8 +2090,9 @@ class GemmGemmConfiguration(PerfConfiguration):
             str(self.m), '-k',
             str(self.k), '-n',
             str(self.n), '-gemmO',
-            str(self.o), f"-transA={self.trans_a}", f"-transB={self.trans_b}",
-            f"-transC={self.trans_c}", f"-transO={self.trans_o}",
+            str(self.o), f"-transA={str(self.trans_a).lower()}",
+            f"-transB={str(self.trans_b).lower()}", f"-transC={str(self.trans_c).lower()}",
+            f"-transO={str(self.trans_o).lower()}",
             *(['--kernel-repeats', str(kernel_repeats)] if kernel_repeats is not None else []),
             f"--perf_config={self.perfconfig}"
         ])
@@ -2361,11 +2362,12 @@ class AttentionConfiguration(PerfConfiguration):
             str(self.num_heads_q), '-num_heads_kv',
             str(self.num_heads_kv), '-head_dim_qk',
             str(self.head_dim_qk), '-head_dim_v',
-            str(self.head_dim_v), f"-with-attn-scale={self.with_attn_scale}",
-            f"-with-attn-bias={self.with_attn_bias}", f"-transBias={self.trans_bias}",
-            f"-transQ={self.trans_q}", f"-transK={self.trans_k}", f"-transV={self.trans_v}",
-            f"-transO={self.trans_o}", f"-causal={self.causal}", f"-return_lse={self.return_lse}",
-            f"-split_kv={self.split_kv}",
+            str(self.head_dim_v), f"-with-attn-scale={str(self.with_attn_scale).lower()}",
+            f"-with-attn-bias={str(self.with_attn_bias).lower()}",
+            f"-transBias={str(self.trans_bias).lower()}", f"-transQ={str(self.trans_q).lower()}",
+            f"-transK={str(self.trans_k).lower()}", f"-transV={str(self.trans_v).lower()}",
+            f"-transO={str(self.trans_o).lower()}", f"-causal={str(self.causal).lower()}",
+            f"-return_lse={str(self.return_lse).lower()}", f"-split_kv={self.split_kv}",
             *([f"-sliding_window_look_back={self.sliding_window_look_back}"]
               if self.sliding_window_look_back is not None else []),
             *([f"-causal_look_back={self.causal_look_back}"] if self.causal_look_back is not None

@@ -28,7 +28,7 @@
 // CHECK_SCALE-LABEL: func.func @host_naive_attention
 // CHECK_SCALE: %[[qkTensor:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor:.*]], %{{.*}}, %{{.*}} {acc_type = f32} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[squareShape:tensor<.*>]]
 // CHECK_SCALE-DAG: %[[sqkTensor:.*]] = tosa.mul %[[qkTensor]], %[[scaleTensor:.*]], %{{.*}} : ([[squareShape]], [[squareShape]], tensor<1xi8>) -> [[squareShape]]
-// CHECK_SCALE-DAG: %[[sqkTensorCast:.*]] = tosa.cast %[[sqkTensor]] : ([[squareShape]]) -> [[squareShape]]
+// CHECK_SCALE-DAG: %[[sqkTensorCast:.*]] = tosa.cast %[[sqkTensor]] input_unsigned(false) : ([[squareShape]]) -> [[squareShape]]
 // CHECK_SCALE-DAG: %[[sqkMaxs:.*]] = tosa.reduce_max %[[sqkTensorCast]] {{.*}} : ([[squareShape]]) -> [[reducedShape:tensor<.*>]]
 // CHECK_SCALE-DAG: %[[safeSqkMaxs:.*]] = tosa.maximum %[[sqkMaxs]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK_SCALE-DAG: %[[normilizedSqkTensor:.*]] = tosa.sub %[[sqkTensorCast]], %[[safeSqkMaxs]] : ([[squareShape]], [[reducedShape]]) -> [[squareShape]]
@@ -37,7 +37,7 @@
 // CHECK_SCALE-DAG: %[[safeExpsSums:.*]] = tosa.maximum %[[expsSumsTensor]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK_SCALE-DAG: %[[invExpsSums:.*]] = tosa.reciprocal %[[safeExpsSums]] : ([[reducedShape]]) -> [[reducedShape]]
 // CHECK_SCALE-DAG: %[[softmaxTensor:.*]] = tosa.mul %[[expsTensor]], %[[invExpsSums]], %{{.*}} : ([[squareShape]], [[reducedShape]], tensor<1xi8>) -> [[squareShape]]
-// CHECK_SCALE-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] : ([[squareShape]]) -> [[squareShape]]
+// CHECK_SCALE-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] input_unsigned(false) : ([[squareShape]]) -> [[squareShape]]
 // CHECK_SCALE-DAG: %[[resultTensor:.*]] = tosa.matmul %[[softmaxTensorCast]], %[[valuesTensor:.*]], %{{.*}}, %{{.*}} : ([[squareShape]], [[valuesShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[valuesShape]]
 // CHECK_SCALE: return
 
@@ -66,7 +66,7 @@
 
 // CHECK_NO_SCALE-LABEL: func.func @host_naive_attention
 // CHECK_NO_SCALE: %[[qkTensor:.*]] = tosa.matmul %[[queriesTensor:.*]], %[[keysTensor:.*]], %{{.*}}, %{{.*}} : ([[queriesShape:tensor<.*>]], [[keysShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[squareShape:tensor<.*>]]
-// CHECK_NO_SCALE: %[[qkTensorCast:.*]] = tosa.cast %[[qkTensor]] : ([[squareShape]]) -> [[squareShape]]
+// CHECK_NO_SCALE: %[[qkTensorCast:.*]] = tosa.cast %[[qkTensor]] input_unsigned(false) : ([[squareShape]]) -> [[squareShape]]
 // CHECK_NO_SCALE-DAG: %[[sqkMaxs:.*]] = tosa.reduce_max %[[qkTensorCast]] {{.*}} : ([[squareShape]]) -> [[reducedShape:tensor<.*>]]
 // CHECK_NO_SCALE-DAG: %[[safeSqkMaxs:.*]] = tosa.maximum %[[sqkMaxs]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK_NO_SCALE-DAG: %[[normilizedQkTensor:.*]] = tosa.sub %[[qkTensorCast]], %[[safeSqkMaxs]] : ([[squareShape]], [[reducedShape]]) -> [[squareShape]]
@@ -75,7 +75,7 @@
 // CHECK_NO_SCALE-DAG: %[[safeExpsSums:.*]] = tosa.maximum %[[expsSumsTensor]], %{{.*}} : ([[reducedShape]], [[reducedShape]]) -> [[reducedShape]]
 // CHECK_NO_SCALE-DAG: %[[invExpsSums:.*]] = tosa.reciprocal %[[safeExpsSums]] : ([[reducedShape]]) -> [[reducedShape]]
 // CHECK_NO_SCALE-DAG: %[[softmaxTensor:.*]] = tosa.mul %[[expsTensor]], %[[invExpsSums]], %{{.*}} : ([[squareShape]], [[reducedShape]], tensor<1xi8>) -> [[squareShape]]
-// CHECK_NO_SCALE-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] : ([[squareShape]]) -> [[squareShape]]
+// CHECK_NO_SCALE-DAG: %[[softmaxTensorCast:.*]] = tosa.cast %[[softmaxTensor]] input_unsigned(false) : ([[squareShape]]) -> [[squareShape]]
 // CHECK_NO_SCALE-DAG: %[[resultTensor:.*]] = tosa.matmul %[[softmaxTensorCast]], %[[valuesTensor:.*]], %{{.*}}, %{{.*}} : ([[squareShape]], [[valuesShape:tensor<.*>]], tensor<1xf32>, tensor<1xf32>) -> [[valuesShape]]
 // CHECK_NO_SCALE: return
 

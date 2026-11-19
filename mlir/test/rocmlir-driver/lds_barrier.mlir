@@ -4,5 +4,5 @@
 // This is E2E compilation test to ensure gfx90a specific inlineAsm hack
 // does not blow up in the backend compiler.
 
-// RUN: rocmlir-gen -operation gemm -t f32 -out_datatype f32 --arch gfx90a:sramecc+:xnack- --num_cu 120 -g 1 -m 24576 -k 768 -n 3072 -transA=False -transB=False --perf_config= | rocmlir-driver -c | FileCheck %s
+// RUN: rocmlir-gen -operation gemm -t f32 -out_datatype f32 --arch gfx90a:sramecc+:xnack- --num_cu 120 -g 1 -m 24576 -k 768 -n 3072 -transA=false -transB=false --perf_config= | rocmlir-driver -c | FileCheck %s
 // CHECK: triton.hsaco

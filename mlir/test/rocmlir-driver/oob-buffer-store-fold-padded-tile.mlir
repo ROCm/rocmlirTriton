@@ -1,21 +1,29 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// The companion to oob-buffer-store-fold.mlir, for the shape that test does not
-// reach. When tritonamdgpu-annotate-buffer-op-split-safety lets the buffer-op
-// emitter lift a uniform part of the offset into an soffset SGPR, the emitter
-// stops using a bare sentinel and emits a correlated pair instead:
+// The companion to oob-buffer-store-fold.mlir, for a problem small enough that
+// almost the whole tile is padding: a 2x5 by 5x5 dot, with M and N both padded
+// up to the tile size. Nearly every store the epilogue emits is masked off, so
+// this pins how much of that the fold reclaims on each target, and the counts
+// below are far enough apart to catch one arch silently changing shape.
+//
+// This file used to cover a second sentinel shape as well. When the buffer-op
+// emitter lifted a uniform part of the offset into an soffset SGPR, it emitted
+// a correlated pair instead of a bare sentinel:
 //
 //   %c    = llvm.icmp "sge" %uniform, 0
 //   soff  = llvm.select %c, %uniform, 0
 //   %oob  = llvm.select %c, llvm.sub(-1, %uniform), -2147483648
 //
-// Both arms are still discarded, but seeing that takes the two selects together:
-// on their own the offset is unbounded below and the soffset unbounded above.
+// gfx1100 and gfx1200 took that path and erased only 24 of 32 stores, since
+// proving both arms discarded takes the two selects together. Upstream has
+// since dropped the scheme -- `BufferEmitter::fillCommonArgs` masks every lane
+// to a bare -1, which is out of bounds for any 32-bit num_records whatever the
+// soffset adds, and `annotate-buffer-op-split-safety` is gone with it. Those
+// two targets now take the same plain-sentinel path as the rest and erase 31
+// of 32, and `rock-fold-oob-buffer-ops` no longer carries a matcher for the
+// correlated form.
 //
-// A 2x5 by 5x5 dot is enough, since M and N are both padded up to the tile size.
-// gfx1100 and gfx1200 take the split path and erase 24 of 32 stores; the other
-// targets keep a zero soffset here and go through the plain sentinel.
 // perf_config is pinned so the counts do not move with the tuning heuristics.
 
 // RUN: sed s/##TOKEN_ARCH##/gfx1100/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1100 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1100 | FileCheck %s --check-prefix=SPLIT
@@ -37,13 +45,14 @@
 // RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx950/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx950 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx950 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-CDNA %}
 // RUN: %if asserts %{ sed s/##TOKEN_ARCH##/gfx1250/g %s | rocmlir-driver -kernel-pipeline=migraphx,highlevel -arch gfx1250 | rocmlir-driver -kernel-pipeline=gpu,triton -arch gfx1250 -o /dev/null -mlir-pass-statistics 2>&1 | FileCheck %s --check-prefix=STATS-GFX1250 %}
 
-// On the split-soffset path (gfx1100/gfx1200) this kernel retains 8 stores.
-// Keep this count pinned as the coverage anchor for that path.
-// SPLIT-COUNT-8: rocdl.raw.ptr.buffer.store
+// Only the stores that are actually in bounds survive, on every target.
+// SPLIT-COUNT-1: rocdl.raw.ptr.buffer.store
 // SPLIT-NOT: rocdl.raw.ptr.buffer.store
 
-// Pinning the plain-sentinel targets keeps a change in the split-safety analysis
-// visible as a failure rather than as silently narrowed coverage.
+// An `llvm.icmp "sge"` here would mean the correlated soffset pair is back, so
+// every target keeps asserting its absence.
+// SPLIT-NOT: llvm.icmp "sge"
+
 // GFX942-NOT: llvm.icmp "sge"
 // GFX942-COUNT-4: rocdl.raw.ptr.buffer.store
 // GFX942-NOT: rocdl.raw.ptr.buffer.store
@@ -58,7 +67,7 @@
 
 // STATS-SPLIT:      RockFoldOobBufferOpsPass
 // STATS-SPLIT-NEXT:   (S) 0 num-erased-atomics
-// STATS-SPLIT-NEXT:   (S) 24 num-erased-stores
+// STATS-SPLIT-NEXT:   (S) 31 num-erased-stores
 // STATS-SPLIT-NEXT:   (S) 91 num-folded-loads
 
 // STATS-CDNA:      RockFoldOobBufferOpsPass
