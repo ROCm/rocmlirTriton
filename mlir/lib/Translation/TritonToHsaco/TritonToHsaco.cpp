@@ -887,7 +887,7 @@ private:
 #endif
 
     handle = mlir::rock::dl::open(libraryName);
-    if (!handle) {
+    if (handle == nullptr) {
       llvm::errs() << "Error loading " << libraryName << ": " << mlir::rock::dl::lastError()
                    << '\n';
       compile = nullptr;

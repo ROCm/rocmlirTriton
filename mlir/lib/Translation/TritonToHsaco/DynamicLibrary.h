@@ -72,7 +72,7 @@ inline LibraryHandle open(const char *name) {
 
 /// Looks up a symbol. Returns nullptr on failure; call lastError() for details.
 inline void *getSymbol(LibraryHandle handle, const char *name) {
-  if (!handle)
+  if (handle == nullptr)
     return nullptr;
 #ifdef _WIN32
   return reinterpret_cast<void *>(
@@ -84,7 +84,7 @@ inline void *getSymbol(LibraryHandle handle, const char *name) {
 
 /// Unloads a library. Accepts nullptr.
 inline void close(LibraryHandle handle) {
-  if (!handle)
+  if (handle == nullptr)
     return;
 #ifdef _WIN32
   FreeLibrary(reinterpret_cast<HMODULE>(handle));
