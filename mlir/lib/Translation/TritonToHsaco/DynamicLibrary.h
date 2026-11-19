@@ -71,7 +71,7 @@ inline LibraryHandle open(const char *name) {
 }
 
 /// Looks up a symbol. Returns nullptr on failure; call lastError() for details.
-inline void *get_symbol(LibraryHandle handle, const char *name) {
+inline void *getSymbol(LibraryHandle handle, const char *name) {
   if (!handle)
     return nullptr;
 #ifdef _WIN32

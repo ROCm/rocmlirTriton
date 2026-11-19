@@ -898,13 +898,13 @@ private:
     }
 
     compile = reinterpret_cast<CompileFn>(
-        mlir::rock::dl::get_symbol(handle, "triton_amdgpu_compile"));
+        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_compile"));
     assemble = reinterpret_cast<AssembleFn>(
-        mlir::rock::dl::get_symbol(handle, "triton_amdgpu_assemble"));
+        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_assemble"));
     free = reinterpret_cast<void (*)(void *)>(
-        mlir::rock::dl::get_symbol(handle, "triton_amdgpu_free"));
+        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_free"));
     revision = reinterpret_cast<const char *(*)()>(
-        mlir::rock::dl::get_symbol(handle, "triton_amdgpu_revision"));
+        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_revision"));
     if (!compile || !assemble || !free || !revision)
       llvm::errs() << "Error finding symbols: " << mlir::rock::dl::lastError() << '\n';
   }
