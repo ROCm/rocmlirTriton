@@ -100,8 +100,9 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     rocm_install(FILES ${__triton_libraries}
             DESTINATION lib/llvm)
 
+    # triton_amd_codegen is a DLL on Windows, so it belongs in the bin directory.
     rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
-            DESTINATION ${CMAKE_INSTALL_LIBDIR})
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
 
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
