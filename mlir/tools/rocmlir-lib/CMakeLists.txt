@@ -95,6 +95,9 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     rocm_install(FILES ${__triton_libraries}
             DESTINATION lib/llvm)
 
+    rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION lib)
+
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
     unset(__triton_libs)
