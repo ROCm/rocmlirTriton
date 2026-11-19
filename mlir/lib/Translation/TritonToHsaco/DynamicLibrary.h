@@ -24,6 +24,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+// winerror.h defines NO_ERROR, which clashes with enumerators in LLVM headers
+// (e.g. AMDGPUTargetParser.h).
+#ifdef NO_ERROR
+#undef NO_ERROR
+#endif
 #else
 #include <dlfcn.h>
 #endif
