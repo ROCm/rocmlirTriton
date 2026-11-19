@@ -4,6 +4,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
   # /opt/rocm stays as the Linux fallback.
   find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
+  include(GNUInstallDirs)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -99,6 +100,9 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     rocm_install(FILES ${__triton_libraries}
             DESTINATION lib/llvm)
 
+    rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
     unset(__triton_libs)
@@ -142,8 +146,8 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
     rocm_install(FILES ${full_output_path}
             DESTINATION lib)
-	rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
-            DESTINATION lib)
+    rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
     # Backward compatibility to provide `librockCompiler` build target.
     # INTERFACE libraries are not exposed as build targets.
