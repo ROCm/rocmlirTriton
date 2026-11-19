@@ -118,6 +118,7 @@ void runScalarizePackedFOpsPass(llvm::Function &F);
 }
 
 using namespace mlir;
+namespace dl = mlir::rock::dl;
 
 namespace {
 
@@ -886,9 +887,9 @@ private:
     const char *libraryName = "libtriton_amd_codegen.so";
 #endif
 
-    handle = mlir::rock::dl::open(libraryName);
+    handle = dl::open(libraryName);
     if (handle == nullptr) {
-      llvm::errs() << "Error loading " << libraryName << ": " << mlir::rock::dl::lastError()
+      llvm::errs() << "Error loading " << libraryName << ": " << dl::lastError()
                    << '\n';
       compile = nullptr;
       assemble = nullptr;
@@ -898,18 +899,18 @@ private:
     }
 
     compile = reinterpret_cast<CompileFn>(
-        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_compile"));
+        dl::getSymbol(handle, "triton_amdgpu_compile"));
     assemble = reinterpret_cast<AssembleFn>(
-        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_assemble"));
+        dl::getSymbol(handle, "triton_amdgpu_assemble"));
     free = reinterpret_cast<void (*)(void *)>(
-        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_free"));
+        dl::getSymbol(handle, "triton_amdgpu_free"));
     revision = reinterpret_cast<const char *(*)()>(
-        mlir::rock::dl::getSymbol(handle, "triton_amdgpu_revision"));
+        dl::getSymbol(handle, "triton_amdgpu_revision"));
     if (!compile || !assemble || !free || !revision)
-      llvm::errs() << "Error finding symbols: " << mlir::rock::dl::lastError() << '\n';
+      llvm::errs() << "Error finding symbols: " << dl::lastError() << '\n';
   }
 
-  ~TritonAMDGPUCodegenLibrary() { mlir::rock::dl::close(handle); }
+  ~TritonAMDGPUCodegenLibrary() { dl::close(handle); }
 
   // Disable copy and move
   TritonAMDGPUCodegenLibrary(const TritonAMDGPUCodegenLibrary &) = delete;
