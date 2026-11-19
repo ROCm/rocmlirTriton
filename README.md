@@ -10,7 +10,7 @@
 
 > MLIR-based GEMM, convolution, attention, GEMM+GEMM, and CONV+GEMM kernel generator for AMD GPUs, built on a Triton compilation backend.
 
-rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with vendored Triton (under `external/triton`) and Triton-pinned LLVM/MLIR (under `external/llvm-project`) producing the final HSACO.
+rocmlirTriton is a Triton-backed GPU kernel generator **derived from** [rocMLIR](https://github.com/ROCm/rocMLIR). Both share, for the most part, the same high-level lowering: `migraphx` -> `tosa` (or `linalg`) -> `rock`, and diverge only at the codegen step: rocMLIR lowers `rock` to MLIR's AMDGPU and ROCDL dialects to HSACO via the LLVM AMDGPU backend, while rocmlirTriton hands off to Triton's TTIR -> TTGIR -> LLIR pipeline (see `Pipelines.cpp` / `TritonToHsaco.cpp`), with Triton and Triton-pinned LLVM/MLIR, both fetched at configure time, producing the final HSACO.
 
 It targets AMD CDNA and RDNA GPUs (gfx9xx / gfx10xx / gfx11xx / gfx12xx), and is primarily consumed as the static `librockCompiler` library by [MIGraphX](https://github.com/ROCm/AMDMIGraphX), though it can also be driven standalone for kernel generation, validation, and performance tuning.
 
@@ -27,7 +27,7 @@ see [docs/building-on-windows.md](docs/building-on-windows.md).
 
 ## Installation
 
-Triton and LLVM/MLIR are vendored in the repo (under `external/triton` and `external/llvm-project`), imported via `git subtree`. The build is driven by `cmake.sh`, which configures and builds LLVM/MLIR, Triton, and rocmlirTriton from those vendored trees. Patch files under `llvm-patches/` and `triton-patches/` are kept for provenance and to simplify the next upstream bump; they are not applied during CMake configure.
+Triton and LLVM/MLIR are not vendored in this repo. `cmake/triton.cmake` fetches them at configure time from pinned branches of [ROCm/triton](https://github.com/ROCm/triton) and [ROCm/llvm-project](https://github.com/ROCm/llvm-project) -- `ROCMLIR_TRITON_GIT_BRANCH`, `ROCMLIR_LLVM_GIT_BRANCH` and `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH`, which name `rmt-<date>` tips -- and unpacks them under `build/_deps/`. The build is driven by `cmake.sh`, which configures and builds LLVM/MLIR, Triton, and rocmlirTriton. Downstream changes to either tree live as commits on those branch tips rather than as patch files here; see [docs/bump_triton_version.md](docs/bump_triton_version.md).
 
 ```sh
 git clone https://github.com/ROCm/rocmlirTriton.git
@@ -88,9 +88,9 @@ More examples live under `mlir/test/rocmlir-driver/` (notably `sanity.mlir`), wi
 cd build && ninja check-rocmlir
 ```
 
-The vendored trees keep their own suites: `check-mlir` for `external/llvm-project`
-and `check-triton-lit-tests` for `external/triton`. They are the only suites that
-exercise those trees directly, and nightly CI runs both.
+The fetched trees keep their own suites: `check-mlir` for LLVM/MLIR and
+`check-triton-lit-tests` for Triton. They are the only suites that exercise those
+trees directly, and nightly CI runs both.
 
 ## Contributing
 

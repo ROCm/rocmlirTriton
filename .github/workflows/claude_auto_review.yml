@@ -416,8 +416,7 @@ jobs:
           rm /tmp/pr/files.json
           # Commit-level metadata lets the read-only review step check
           # conventions that cannot be inferred from the final PR diff alone,
-          # such as requiring vendored-subtree edits to live in [EXTERNAL]
-          # commits and comparing patch records against the exact commit diff.
+          # i.e. anything that needs per-commit subjects, paths or diffs.
           # Keep this block in sync with the interactive appendix in
           # .claude/skills/review-rocmlir-triton-pr/SKILL.md.
           mkdir -p /tmp/pr/commit_diffs
@@ -425,8 +424,8 @@ jobs:
           while IFS= read -r sha; do
             subject=$(git log -1 --format=%s "$sha")
             diff_path="/tmp/pr/commit_diffs/${sha}.patch"
-            # Compare each commit against its first parent. This preserves the
-            # actual subtree-import diff for merge commits while matching the
+            # Compare each commit against its first parent, which gives the
+            # diff a merge commit actually introduced while matching the
             # normal single-parent commit diff.
             parent=$(git rev-parse "${sha}^1" 2>/dev/null) \
               || parent=$(git hash-object -t tree /dev/null)
@@ -819,9 +818,10 @@ jobs:
 
             ## Triton bump guide (canonical reference)
 
-            Apply this guide when the PR imports a new upstream revision into
-            `external/triton` or `external/llvm-project`, or changes the
-            downstream patch records under `triton-patches/` or `llvm-patches/`.
+            Apply this guide when the PR moves the Triton/LLVM pins in
+            `cmake/triton.cmake`, i.e. any of `ROCMLIR_TRITON_GIT_BRANCH`,
+            `ROCMLIR_LLVM_GIT_BRANCH` or
+            `ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH`.
 
             <BEGIN docs/bump_triton_version.md>
 

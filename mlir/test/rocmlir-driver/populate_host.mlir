@@ -8,12 +8,6 @@
 // CHECK-LABEL: func.func @main()
 // CHECK-NEXT: %[[filter:.*]] = memref.alloc() : memref<[[GKCYX:[0-9]+]]x[[TYPE:[a-zA-Z0-9]+]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
 // CHECK-NEXT: affine.for %[[if:.*]] = 0 to [[GKCYX]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[if]])
 // CHECK-NEXT: vector.extract
@@ -21,12 +15,6 @@
 // CHECK-NEXT: }
 // CHECK-NEXT: %[[input:.*]] = memref.alloc() : memref<[[NGCHIWI:[0-9]+]]x[[TYPE]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[TYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[TYPE]] into vector<3x[[TYPE]]>
 // CHECK-NEXT: affine.for %[[ii:.*]] = 0 to [[NGCHIWI]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[ii]])
 // CHECK-NEXT: vector.extract
@@ -34,12 +22,6 @@
 // CHECK-NEXT: }
 // CHECK-NEXT: %[[output:.*]] = memref.alloc() : memref<[[NGKHOWO:[0-9]+]]x[[OTYPE:.*]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<3x[[OTYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[OTYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[OTYPE]] into vector<3x[[OTYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[OTYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[OTYPE]] into vector<3x[[OTYPE]]>
-// CHECK-NEXT: arith.constant {{.*}} : [[OTYPE]]
-// CHECK-NEXT: vector.insert {{.*}} : [[OTYPE]] into vector<3x[[OTYPE]]>
 // CHECK-NEXT: affine.for %[[io:.*]] = 0 to [[NGKHOWO]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[io]])
 // CHECK-NEXT: vector.extract

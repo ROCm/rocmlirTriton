@@ -7,7 +7,7 @@
 // approximation, are in tanh-f16-isa.mlir and tanh-bf16-isa.mlir.
 //
 // Three things are pinned here. On gfx1250 tanh must reach the native v_tanh_f32
-// instruction, which it does by going out as __ocml_tanh_f32 for the AMD
+// instruction, which it does by going out as __triton_hip_fast_tanhf for the AMD
 // backend to rewrite. Everywhere else an f32 tanh keeps the math dialect's
 // expansion, and that expansion has to come out as one v_exp_f32 and one
 // v_rcp_f32. That reciprocal is the fragile part: it depends on the `arcp` that

@@ -45,10 +45,10 @@ module attributes {rock.arch = "gfx942"} {
   // `divf` needs no emulation and stays at width, which is what makes it the
   // control here.
   // CHECK-LABEL: llvm.func @arith_bf16
-  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
-  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
-  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : f32
-  // CHECK-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : bf16
+  // CHECK-DAG: llvm.fadd %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : f32
+  // CHECK-DAG: llvm.fsub %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : f32
+  // CHECK-DAG: llvm.fmul %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : f32
+  // CHECK-DAG: llvm.fdiv %{{.*}}, %{{.*}} fastmath<nsz, arcp, afn> : bf16
   //
   // NOFM-LABEL: llvm.func @arith_bf16
   // NOFM-DAG: llvm.fadd %{{.*}}, %{{.*}} : f32
@@ -59,10 +59,10 @@ module attributes {rock.arch = "gfx942"} {
   // On gfx1250 the same three ops keep their flags on a vector rather than on a
   // widened f32.
   // PACKED-LABEL: llvm.func @arith_bf16
-  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xbf16>
-  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xbf16>
-  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, contract, reassoc>} : vector<2xbf16>
-  // PACKED-DAG: llvm.fdiv %{{.*}}, %{{.*}} {fastmathFlags = #llvm.fastmath<nsz, arcp, afn>} : bf16
+  // PACKED-DAG: llvm.fadd %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : vector<2xbf16>
+  // PACKED-DAG: llvm.fsub %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : vector<2xbf16>
+  // PACKED-DAG: llvm.fmul %{{.*}}, %{{.*}} fastmath<nsz, contract, reassoc> : vector<2xbf16>
+  // PACKED-DAG: llvm.fdiv %{{.*}}, %{{.*}} fastmath<nsz, arcp, afn> : bf16
   //
   // The bf16 divide widens to f32 either way, so what `arcp` removes here is
   // the whole three-instruction scale/fmas/fixup sequence around it rather than

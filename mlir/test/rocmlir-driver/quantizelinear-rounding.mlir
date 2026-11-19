@@ -36,7 +36,7 @@ func.func @quantizelinear_rne() -> !migraphx.shaped<8xsi32, 1>
 //
 // TOSA-LABEL: func.func @convert_rtz
 // TOSA-NOT: tosa.cast
-// TOSA: operator_name = "fp_to_int_cast"
+// TOSA: operator_name("fp_to_int_cast")
 //
 // HIGHLEVEL-LABEL: func.func @convert_rtz
 // HIGHLEVEL-NOT: math.roundeven

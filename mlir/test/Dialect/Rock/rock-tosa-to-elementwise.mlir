@@ -61,7 +61,7 @@ func.func @maximum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor
 // CHECK-NOT:   tosa.maximum
 // CHECK:       arith.maxnumf %arg0, %arg1 : tensor<4x8xf32>
 func.func @maximum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
-  %0 = tosa.maximum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  %0 = tosa.maximum %arg0, %arg1 nan_mode<IGNORE> : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 
@@ -71,7 +71,7 @@ func.func @maximum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>
 // CHECK-NOT:   tosa.maximum
 // CHECK:       arith.maximumf %arg0, %arg1 : tensor<4x8xf32>
 func.func @maximum_f32_propagate_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
-  %0 = tosa.maximum %arg0, %arg1 {nan_mode = PROPAGATE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  %0 = tosa.maximum %arg0, %arg1 nan_mode<PROPAGATE> : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 
@@ -101,7 +101,7 @@ func.func @minimum_f32(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor
 // CHECK-NOT:   tosa.minimum
 // CHECK:       arith.minnumf %arg0, %arg1 : tensor<4x8xf32>
 func.func @minimum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
-  %0 = tosa.minimum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  %0 = tosa.minimum %arg0, %arg1 nan_mode<IGNORE> : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 
@@ -111,7 +111,7 @@ func.func @minimum_f32_ignore_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>
 // CHECK-NOT:   tosa.minimum
 // CHECK:       arith.minimumf %arg0, %arg1 : tensor<4x8xf32>
 func.func @minimum_f32_propagate_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf32>) -> tensor<4x8xf32> attributes {rock.kernel} {
-  %0 = tosa.minimum %arg0, %arg1 {nan_mode = PROPAGATE} : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
+  %0 = tosa.minimum %arg0, %arg1 nan_mode<PROPAGATE> : (tensor<4x8xf32>, tensor<4x8xf32>) -> tensor<4x8xf32>
   return %0 : tensor<4x8xf32>
 }
 
@@ -121,7 +121,7 @@ func.func @minimum_f32_propagate_nan(%arg0: tensor<4x8xf32>, %arg1: tensor<4x8xf
 // CHECK-NOT:   tosa.minimum
 // CHECK:       arith.minsi %arg0, %arg1 : tensor<4x8xi32>
 func.func @minimum_i32(%arg0: tensor<4x8xi32>, %arg1: tensor<4x8xi32>) -> tensor<4x8xi32> attributes {rock.kernel} {
-  %0 = tosa.minimum %arg0, %arg1 {nan_mode = IGNORE} : (tensor<4x8xi32>, tensor<4x8xi32>) -> tensor<4x8xi32>
+  %0 = tosa.minimum %arg0, %arg1 nan_mode<IGNORE> : (tensor<4x8xi32>, tensor<4x8xi32>) -> tensor<4x8xi32>
   return %0 : tensor<4x8xi32>
 }
 
@@ -325,7 +325,7 @@ func.func @select_op(%arg0: tensor<4x8xi1>, %arg1: tensor<4x8xf32>, %arg2: tenso
 // CHECK:       %[[CLAMPED:.*]] = arith.minimumf %arg0, %[[MAX]] : tensor<16xf32>
 // CHECK:       arith.maximumf %[[CLAMPED]], %[[MIN]] : tensor<16xf32>
 func.func @clamp_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
-  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32} : (tensor<16xf32>) -> tensor<16xf32>
+  %0 = tosa.clamp %arg0 min_val(0.0 : f32) max_val(6.0 : f32) : (tensor<16xf32>) -> tensor<16xf32>
   return %0 : tensor<16xf32>
 }
 
@@ -339,7 +339,7 @@ func.func @clamp_f32(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.k
 // CHECK:       %[[CLAMPED:.*]] = arith.minimumf %arg0, %{{.*}} : tensor<16xf32>
 // CHECK:       arith.maximumf %[[CLAMPED]], %{{.*}} : tensor<16xf32>
 func.func @clamp_f32_propagate(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
-  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32, nan_mode = PROPAGATE} : (tensor<16xf32>) -> tensor<16xf32>
+  %0 = tosa.clamp %arg0 min_val(0.0 : f32) max_val(6.0 : f32) nan_mode<PROPAGATE> : (tensor<16xf32>) -> tensor<16xf32>
   return %0 : tensor<16xf32>
 }
 
@@ -356,7 +356,7 @@ func.func @clamp_f32_propagate(%arg0: tensor<16xf32>) -> tensor<16xf32> attribut
 // CHECK:       %[[CLAMPED:.*]] = arith.minnumf %arg0, %[[MAX]] : tensor<16xf32>
 // CHECK:       arith.maxnumf %[[CLAMPED]], %[[MIN]] : tensor<16xf32>
 func.func @clamp_f32_ignore(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes {rock.kernel} {
-  %0 = tosa.clamp %arg0 {min_val = 0.0 : f32, max_val = 6.0 : f32, nan_mode = IGNORE} : (tensor<16xf32>) -> tensor<16xf32>
+  %0 = tosa.clamp %arg0 min_val(0.0 : f32) max_val(6.0 : f32) nan_mode<IGNORE> : (tensor<16xf32>) -> tensor<16xf32>
   return %0 : tensor<16xf32>
 }
 
@@ -369,7 +369,7 @@ func.func @clamp_f32_ignore(%arg0: tensor<16xf32>) -> tensor<16xf32> attributes 
 // CHECK:       %[[CLAMPED:.*]] = arith.minsi %arg0, %{{.*}} : tensor<16xi32>
 // CHECK:       arith.maxsi %[[CLAMPED]], %{{.*}} : tensor<16xi32>
 func.func @clamp_i32_ignore(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.clamp %arg0 {min_val = -128 : i32, max_val = 127 : i32, nan_mode = IGNORE} : (tensor<16xi32>) -> tensor<16xi32>
+  %0 = tosa.clamp %arg0 min_val(-128 : i32) max_val(127 : i32) nan_mode<IGNORE> : (tensor<16xi32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -382,7 +382,7 @@ func.func @clamp_i32_ignore(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes 
 // CHECK:       %[[CLAMPED:.*]] = arith.minsi %arg0, %[[MAX]] : tensor<16xi32>
 // CHECK:       arith.maxsi %[[CLAMPED]], %[[MIN]] : tensor<16xi32>
 func.func @clamp_i32(%arg0: tensor<16xi32>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.clamp %arg0 {min_val = -128 : i32, max_val = 127 : i32} : (tensor<16xi32>) -> tensor<16xi32>
+  %0 = tosa.clamp %arg0 min_val(-128 : i32) max_val(127 : i32) : (tensor<16xi32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -696,7 +696,7 @@ func.func @add_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> 
 // IEEE:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
 // IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @unsigned_cast_fptoui(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -722,7 +722,7 @@ func.func @unsigned_cast_fptoui(%arg0: tensor<16xf32>) -> tensor<16xi32> attribu
 // IEEE:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
 // IEEE:       arith.fptoui %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
 func.func @unsigned_cast_fptoui_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi8>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
 }
 
@@ -754,7 +754,7 @@ func.func @unsigned_cast_fptoui_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8
 // IEEE:       %[[CONV:.*]] = arith.fptoui %[[POS]] : tensor<16xf16> to tensor<16xi32>
 // IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @unsigned_cast_fptoui_f16_to_i32(%arg0: tensor<16xf16>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf16>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf16>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -776,7 +776,7 @@ func.func @add_f32_broadcast_both(%arg0: tensor<4x1xf32>, %arg1: tensor<1x8xf32>
 // CHECK-NOT:   tosa.custom
 // CHECK:       arith.uitofp %arg0 : tensor<16xi32> to tensor<16xf32>
 func.func @unsigned_cast_uitofp(%arg0: tensor<16xi32>) -> tensor<16xf32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi32>) -> tensor<16xf32>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi32>) -> tensor<16xf32>
   return %0 : tensor<16xf32>
 }
 
@@ -798,7 +798,7 @@ func.func @mul_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>) -> 
 // CHECK-NOT:   tosa.custom
 // CHECK:       arith.extui %arg0 : tensor<16xi8> to tensor<16xi32>
 func.func @unsigned_cast_extui(%arg0: tensor<16xi8>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi8>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi8>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -819,7 +819,7 @@ func.func @greater_f32_broadcast(%arg0: tensor<4x8xf32>, %arg1: tensor<1x8xf32>)
 // CHECK-NOT:   tosa.custom
 // CHECK:       arith.trunci %arg0 : tensor<16xi32> to tensor<16xi8>
 func.func @unsigned_cast_trunci(%arg0: tensor<16xi32>) -> tensor<16xi8> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xi32>) -> tensor<16xi8>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xi32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
 }
 
@@ -840,7 +840,7 @@ func.func @bitwise_and_broadcast(%arg0: tensor<8x4xi32>, %arg1: tensor<1x4xi32>)
 // CHECK-NOT:   tosa.custom
 // CHECK:       arith.divui %arg0, %arg1 : tensor<8xi32>
 func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_div"} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  %0 = tosa.custom %arg0, %arg1 operator_name("unsigned_div") domain_name("rocmlir") implementation_attrs("") : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
   return %0 : tensor<8xi32>
 }
 
@@ -851,7 +851,7 @@ func.func @unsigned_div(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 // CHECK-NOT:   arith.maxsi
 // CHECK:       arith.maxui %arg0, %arg1 : tensor<8xi32>
 func.func @unsigned_max(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0, %arg1 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_max"} : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
+  %0 = tosa.custom %arg0, %arg1 operator_name("unsigned_max") domain_name("rocmlir") implementation_attrs("") : (tensor<8xi32>, tensor<8xi32>) -> tensor<8xi32>
   return %0 : tensor<8xi32>
 }
 
@@ -883,7 +883,7 @@ func.func @unsigned_max(%arg0: tensor<8xi32>, %arg1: tensor<8xi32>) -> tensor<8x
 // IEEE:       %[[OVF:.*]] = arith.cmpf uge, %[[SAN]], {{.*}} : tensor<16xf32>
 // IEEE:       arith.select %[[OVF]], {{.*}}, %[[CONV]] : tensor<16xi1>, tensor<16xi32>
 func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 
@@ -910,7 +910,7 @@ func.func @fp_to_int_cast_f32_to_i32(%arg0: tensor<16xf32>) -> tensor<16xi32> at
 // IEEE:       %[[CLAMPED:.*]] = arith.maxnumf %[[HI]], {{.*}} : tensor<16xf32>
 // IEEE:       arith.fptosi %[[CLAMPED]] : tensor<16xf32> to tensor<16xi8>
 func.func @fp_to_int_cast_f32_to_i8(%arg0: tensor<16xf32>) -> tensor<16xi8> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "fp_to_int_cast"} : (tensor<16xf32>) -> tensor<16xi8>
+  %0 = tosa.custom %arg0 operator_name("fp_to_int_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi8>
   return %0 : tensor<16xi8>
 }
 
@@ -932,7 +932,7 @@ func.func @select_broadcast(%arg0: tensor<1x8xi1>, %arg1: tensor<4x8xf32>, %arg2
 // CHECK-LABEL: @custom_other_domain
 // CHECK:       tosa.custom
 func.func @custom_other_domain(%arg0: tensor<8xf32>) -> tensor<8xf32> attributes {rock.kernel} {
-  %0 = tosa.custom %arg0 {domain_name = "other", implementation_attrs = "", operator_name = "some_op"} : (tensor<8xf32>) -> tensor<8xf32>
+  %0 = tosa.custom %arg0 operator_name("some_op") domain_name("other") implementation_attrs("") : (tensor<8xf32>) -> tensor<8xf32>
   return %0 : tensor<8xf32>
 }
 
@@ -944,7 +944,7 @@ func.func @custom_other_domain(%arg0: tensor<8xf32>) -> tensor<8xf32> attributes
 // CHECK:       tosa.custom
 // CHECK-NOT:   arith.fptoui
 func.func @unsigned_cast_non_kernel(%arg0: tensor<16xf32>) -> tensor<16xi32> {
-  %0 = tosa.custom %arg0 {domain_name = "rocmlir", implementation_attrs = "", operator_name = "unsigned_cast"} : (tensor<16xf32>) -> tensor<16xi32>
+  %0 = tosa.custom %arg0 operator_name("unsigned_cast") domain_name("rocmlir") implementation_attrs("") : (tensor<16xf32>) -> tensor<16xi32>
   return %0 : tensor<16xi32>
 }
 

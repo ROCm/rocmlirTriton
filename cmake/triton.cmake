@@ -14,21 +14,30 @@
 #===----------------------------------------------------------------------===//
 
 include(FetchContent)
+include(ExternalProject)
 
 set(ROCMLIR_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
     CACHE STRING "Git repository for the Triton-pinned LLVM/MLIR sources")
-set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-10-19"
+set(ROCMLIR_LLVM_GIT_BRANCH "rmt-core-2026-11-18"
     CACHE STRING "Git branch/tag/commit for the Triton-pinned LLVM/MLIR sources")
 set(ROCMLIR_TRITON_GIT_REPOSITORY "https://github.com/ROCm/triton"
     CACHE STRING "Git repository for the Triton sources")
-set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-10-19"
+set(ROCMLIR_TRITON_GIT_BRANCH "rmt-2026-11-18"
     CACHE STRING "Git branch/tag/commit for the Triton sources")
+set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY "https://github.com/ROCm/llvm-project"
+    CACHE STRING "Git repository for the standalone AMD code-generation LLVM")
+set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH "rmt-amd-2026-11-18"
+    CACHE STRING "Git branch/tag/commit for the standalone AMD code-generation LLVM")
+set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}-1"
+    CACHE STRING
+    "Revision string baked into triton_amd_codegen (triton_amdgpu_revision())")
 
 message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}")
 message(STATUS "Fetching Triton:    ${ROCMLIR_TRITON_GIT_REPOSITORY}@${ROCMLIR_TRITON_GIT_BRANCH}")
+message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}")
 
 FetchContent_Declare(
-  rocmlir_llvm_project
+  llvm-project
   URL "${ROCMLIR_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_LLVM_GIT_BRANCH}.tar.gz"
   # GIT_REPOSITORY "${ROCMLIR_LLVM_GIT_REPOSITORY}"
   # GIT_TAG "${ROCMLIR_LLVM_GIT_BRANCH}"
@@ -38,7 +47,7 @@ FetchContent_Declare(
   SOURCE_SUBDIR do-not-auto-add)
 
 FetchContent_Declare(
-  rocmlir_triton
+  triton
   URL "${ROCMLIR_TRITON_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_TRITON_GIT_BRANCH}.tar.gz"
   # GIT_REPOSITORY "${ROCMLIR_TRITON_GIT_REPOSITORY}"
   # GIT_TAG "${ROCMLIR_TRITON_GIT_BRANCH}"
@@ -47,14 +56,25 @@ FetchContent_Declare(
   # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
   SOURCE_SUBDIR do-not-auto-add)
 
-FetchContent_MakeAvailable(rocmlir_llvm_project rocmlir_triton)
+FetchContent_Declare(
+  amd-codegen-llvm
+  URL "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}.tar.gz"
+  # GIT_REPOSITORY "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}"
+  # GIT_TAG "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}"
+  # GIT_SHALLOW TRUE
+  # GIT_PROGRESS TRUE
+  # Download only: We have to build with ExternalProject_Add() to isolate from other llvm-project
+  SOURCE_SUBDIR do-no-auto-add
+)
+
+FetchContent_MakeAvailable(llvm-project triton amd-codegen-llvm)
 
 #===----------------------------------------------------------------------===//
 # Paths for building rocmlirTriton
 #===----------------------------------------------------------------------===//
 
-set(ROCMLIR_LLVM_PROJECT_DIR "${rocmlir_llvm_project_SOURCE_DIR}")
-set(TRITON_PROJECT_DIR "${rocmlir_triton_SOURCE_DIR}")
+set(ROCMLIR_LLVM_PROJECT_DIR "${llvm-project_SOURCE_DIR}")
+set(TRITON_PROJECT_DIR "${triton_SOURCE_DIR}")
 set(TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
 
 # Keep the *_EXTERNAL_SRC_DIR variables (set in the top-level CMakeLists before
@@ -447,6 +467,64 @@ if(TRITON_BUILD_BINARY AND NOT TRITON_BUILD_UT)
   set_target_properties(check-triton-lit-tests-build-only
                         PROPERTIES FOLDER "Tests")
 endif()
+
+#===----------------------------------------------------------------------===//
+# Build AMD codegen LLVM
+#===----------------------------------------------------------------------===//
+
+foreach(_var
+	CMAKE_C_COMPILER CMAKE_CXX_COMPILER
+    CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER)
+  if(${_var})
+    list(APPEND _amd_codegen_tool_args "-D${_var}=${${_var}}")
+  endif()
+endforeach()
+set(triton_amd_codegen_libname "${CMAKE_SHARED_LIBRARY_PREFIX}triton_amd_codegen${CMAKE_SHARED_LIBRARY_SUFFIX}")
+
+ExternalProject_Add(amd_codegen_llvm_build
+  SOURCE_DIR ${amd-codegen-llvm_SOURCE_DIR}
+  PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/llvm"
+  SOURCE_SUBDIR llvm
+  CMAKE_ARGS
+    ${_amd_codegen_tool_args}
+	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    -DLLVM_ENABLE_PROJECTS=
+    -DLLVM_TARGETS_TO_BUILD=AMDGPU
+    -DLLVM_BUILD_UTILS=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_ENABLE_ASSERTIONS=ON
+    -DLLVM_ENABLE_ZSTD=OFF
+  INSTALL_COMMAND ""
+  BUILD_BYPRODUCTS "<BINARY_DIR>/lib/cmake/llvm/LLVMConfig.cmake"
+  USES_TERMINAL_CONFIGURE TRUE
+  USES_TERMINAL_BUILD TRUE)
+
+ExternalProject_Get_Property(amd_codegen_llvm_build BINARY_DIR)
+
+# Build the standalone triton_amd_codegen library against the LLVM
+ExternalProject_Add(triton_amd_codegen
+  DEPENDS amd_codegen_llvm_build
+  SOURCE_DIR "${TRITON_PROJECT_DIR}/third_party/amd/backend/codegen"
+  PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/codegen"
+  CMAKE_ARGS
+    ${_amd_codegen_tool_args}
+	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+	"-DLLVM_DIR=${BINARY_DIR}/lib/cmake/llvm"
+    "-DTRITON_AMD_LLVM_REVISION=${ROCMLIR_AMD_CODEGEN_LLVM_REVISION}"
+  INSTALL_COMMAND ""
+  BUILD_BYPRODUCTS "<BINARY_DIR>/${triton_amd_codegen_libname}"
+  USES_TERMINAL_CONFIGURE TRUE
+  USES_TERMINAL_BUILD TRUE)
+
+ExternalProject_Get_Property(triton_amd_codegen BINARY_DIR)
+
+add_custom_target(triton_amd_codegen_lib ALL
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${BINARY_DIR}/${triton_amd_codegen_libname}" ${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}
+  DEPENDS triton_amd_codegen
+)
+
+set(ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY "${CMAKE_BINARY_DIR}/lib/${triton_amd_codegen_libname}")
+message(STATUS "triton_amd_codegen: ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}")
 
 #===----------------------------------------------------------------------===//
 # Helper Functions for rocMLIR Libraries

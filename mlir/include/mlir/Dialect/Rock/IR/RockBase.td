@@ -18,6 +18,12 @@ def Rock_Dialect : Dialect {
 
   let useDefaultAttributePrinterParser = 1;
 
+  // TODO(bump): the ops in this dialect print their inherent attributes (which
+  // are property-backed) through `attr-dict`, mixed with the discardable ones.
+  // Opting out of strict properties keeps that legacy spelling; migrating the
+  // assembly formats (and every test) to `prop-dict` is a separate task.
+  let useStrictPropertiesInAssemblyFormat = 0;
+
   let extraClassDeclaration = [{
     /// Global name for Rock Kernel Module
     constexpr const static ::llvm::StringLiteral

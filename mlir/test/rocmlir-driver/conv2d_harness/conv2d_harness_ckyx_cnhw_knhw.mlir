@@ -35,9 +35,9 @@ func.func @main() {
   gpu.memcpy  %output, %2 : memref<14745600xf32>, memref<14745600xf32>
 
   // Cast memrefs to tensors for the kernel call.
-  %filter_tensor = bufferization.to_tensor %filter {restrict, writable} : memref<9216xf32> to tensor<9216xf32>
-  %input_tensor = bufferization.to_tensor %input {restrict, writable} : memref<1048576xf32> to tensor<1048576xf32>
-  %output_tensor = bufferization.to_tensor %output {restrict, writable} : memref<14745600xf32> to tensor<14745600xf32>
+  %filter_tensor = bufferization.to_tensor %filter restrict writable : memref<9216xf32> to tensor<9216xf32>
+  %input_tensor = bufferization.to_tensor %input restrict writable : memref<1048576xf32> to tensor<1048576xf32>
+  %output_tensor = bufferization.to_tensor %output restrict writable : memref<14745600xf32> to tensor<14745600xf32>
 
   // launch kernel.
   %result_tensor = call @rock_conv_gck01_gcn01_gkn01(%filter_tensor, %input_tensor, %output_tensor) : (tensor<9216xf32>, tensor<1048576xf32>, tensor<14745600xf32>) -> tensor<14745600xf32>
