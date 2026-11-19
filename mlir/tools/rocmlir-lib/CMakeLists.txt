@@ -4,6 +4,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
   # /opt/rocm stays as the Linux fallback.
   find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
+  include(GNUInstallDirs)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -54,7 +55,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       target_link_libraries(${LIBRARY_NAME}
           INTERFACE
               $<BUILD_INTERFACE:${__library}>
-              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/llvm/${__library}.lib>)
     endforeach()
 
     foreach(__library ${__rocmlir_libs})
@@ -62,7 +63,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       target_link_libraries(${LIBRARY_NAME}
           INTERFACE
               $<BUILD_INTERFACE:${__library}>
-              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library}.lib>)
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/${__library}.lib>)
     endforeach()
 
     add_dependencies(${LIBRARY_NAME} ${__triton_libs})
@@ -82,18 +83,18 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       target_link_libraries(${LIBRARY_NAME}
           INTERFACE
               $<BUILD_INTERFACE:${__library}>
-              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/llvm/${__library}.lib>)
       unset(__target_type)
     endforeach()
 
     rocm_install(FILES ${__mlir_libraries}
-            DESTINATION lib/llvm)
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/llvm)
 
     rocm_install(FILES ${__rocmlir_libraries}
-            DESTINATION lib)
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
     rocm_install(FILES ${__triton_libraries}
-            DESTINATION lib/llvm)
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/llvm)
 
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
@@ -134,12 +135,12 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     target_link_libraries(${LIBRARY_NAME}
         INTERFACE
             $<BUILD_INTERFACE:${full_output_path}>
-            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library_name}${CMAKE_STATIC_LIBRARY_SUFFIX}>)
+            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/${__library_name}${CMAKE_STATIC_LIBRARY_SUFFIX}>)
 
     rocm_install(FILES ${full_output_path}
-            DESTINATION lib)
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
 	rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
-            DESTINATION lib)
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
     # Backward compatibility to provide `librockCompiler` build target.
     # INTERFACE libraries are not exposed as build targets.
@@ -193,9 +194,9 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     # header files in a subdirectory.
     install(TARGETS ${lib_name}
       EXPORT ${package_name}-targets
-      ARCHIVE DESTINATION lib
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
       COMPONENT devel
-      INCLUDES DESTINATION include/${package_name} ${ARG_EXTRA_INCLUDES}
+      INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${package_name} ${ARG_EXTRA_INCLUDES}
     )
 
     # Generate package config and version file
@@ -212,7 +213,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     rocm_install(DIRECTORY
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir
       ${PROJECT_SOURCE_DIR}/mlir/include/mlir-c
-      DESTINATION include/${PACKAGE_NAME}
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PACKAGE_NAME}
       FILES_MATCHING
       PATTERN "*.def"
       PATTERN "*.h"
@@ -222,7 +223,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     )
 
     rocm_install(DIRECTORY ${MLIR_INCLUDE_DIRS}
-      DESTINATION include/${PACKAGE_NAME}/external
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PACKAGE_NAME}/external
       FILES_MATCHING
       PATTERN "*.def"
       PATTERN "*.h"
@@ -234,7 +235,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     )
 
     rocm_install(DIRECTORY ${PROJECT_BINARY_DIR}/mlir/include
-      DESTINATION include/${PACKAGE_NAME}/build
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PACKAGE_NAME}/build
       FILES_MATCHING
       PATTERN "*.def"
       PATTERN "*.h"
@@ -245,7 +246,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       PATTERN "config.h" EXCLUDE
     )
 
-    set(extra_include_dir include/${PACKAGE_NAME}/external/include)
+    set(extra_include_dir ${CMAKE_INSTALL_INCLUDEDIR}/${PACKAGE_NAME}/external/include)
   endif()
 
   # Install ${LIBRARY_NAME} as component of ${PACKAGE_NAME}
