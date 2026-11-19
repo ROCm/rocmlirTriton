@@ -4,6 +4,7 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   # Search ROCM_PATH first so the Windows HIP SDK (e.g. C:/opt/rocm) is honored;
   # /opt/rocm stays as the Linux fallback.
   find_package(ROCmCMakeBuildTools 0.8 REQUIRED PATHS "${ROCM_PATH}" /opt/rocm)
+  include(GNUInstallDirs)
   include(ROCMInstallTargets)
   include(ROCMCreatePackage)
 
@@ -95,6 +96,10 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     rocm_install(FILES ${__triton_libraries}
             DESTINATION lib/llvm)
 
+    # triton_amd_codegen is a DLL on Windows, so it belongs in the bin directory.
+    rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
+
     unset(__rocmlir_libraries)
     unset(__mlir_libraries)
     unset(__triton_libs)
@@ -138,8 +143,8 @@ if(BUILD_FAT_LIBROCKCOMPILER)
 
     rocm_install(FILES ${full_output_path}
             DESTINATION lib)
-	rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
-            DESTINATION lib)
+    rocm_install(FILES ${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
     # Backward compatibility to provide `librockCompiler` build target.
     # INTERFACE libraries are not exposed as build targets.
@@ -246,6 +251,15 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     )
 
     set(extra_include_dir include/${PACKAGE_NAME}/external/include)
+  endif()
+
+  # Tell package consumers where triton_amd_codegen is installed. The value is
+  # substituted into rocMLIRConfig.cmake.in (relative to the package prefix).
+  get_filename_component(TRITON_AMD_CODEGEN_LIBNAME "${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}" NAME)
+  if(WIN32)
+    set(TRITON_AMD_CODEGEN_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
+  else()
+    set(TRITON_AMD_CODEGEN_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")
   endif()
 
   # Install ${LIBRARY_NAME} as component of ${PACKAGE_NAME}
