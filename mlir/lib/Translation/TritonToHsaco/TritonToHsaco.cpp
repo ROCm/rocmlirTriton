@@ -16,7 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Translation/TritonToHsaco.h"
-#include <dlfcn.h>
+#include "DynamicLibrary.h"
 
 #include "mlir/Dialect/Rock/IR/AmdArchDb.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
@@ -118,6 +118,7 @@ void runScalarizePackedFOpsPass(llvm::Function &F);
 }
 
 using namespace mlir;
+namespace dl = mlir::rock::dl;
 
 namespace {
 
@@ -886,23 +887,30 @@ private:
     const char *libraryName = "libtriton_amd_codegen.so";
 #endif
 
-    handle = dlopen(libraryName, RTLD_LOCAL | RTLD_NOW);
-    if (char *error = dlerror())
-      llvm::errs() << "Error in dlopen: " << error << '\n';
+    handle = dl::open(libraryName);
+    if (handle == nullptr) {
+      llvm::errs() << "Error loading " << libraryName << ": " << dl::lastError()
+                   << '\n';
+      compile = nullptr;
+      assemble = nullptr;
+      free = nullptr;
+      revision = nullptr;
+      return;
+    }
 
-    compile =
-        reinterpret_cast<CompileFn>(dlsym(handle, "triton_amdgpu_compile"));
-    assemble =
-        reinterpret_cast<AssembleFn>(dlsym(handle, "triton_amdgpu_assemble"));
-    free =
-        reinterpret_cast<void (*)(void *)>(dlsym(handle, "triton_amdgpu_free"));
+    compile = reinterpret_cast<CompileFn>(
+        dl::getSymbol(handle, "triton_amdgpu_compile"));
+    assemble = reinterpret_cast<AssembleFn>(
+        dl::getSymbol(handle, "triton_amdgpu_assemble"));
+    free = reinterpret_cast<void (*)(void *)>(
+        dl::getSymbol(handle, "triton_amdgpu_free"));
     revision = reinterpret_cast<const char *(*)()>(
-        dlsym(handle, "triton_amdgpu_revision"));
+        dl::getSymbol(handle, "triton_amdgpu_revision"));
     if (!compile || !assemble || !free || !revision)
-      llvm::errs() << "Error finding symbols: " << dlerror() << '\n';
+      llvm::errs() << "Error finding symbols: " << dl::lastError() << '\n';
   }
 
-  ~TritonAMDGPUCodegenLibrary() { dlclose(handle); }
+  ~TritonAMDGPUCodegenLibrary() { dl::close(handle); }
 
   // Disable copy and move
   TritonAMDGPUCodegenLibrary(const TritonAMDGPUCodegenLibrary &) = delete;
