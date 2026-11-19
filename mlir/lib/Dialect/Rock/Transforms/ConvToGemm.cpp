@@ -1165,8 +1165,8 @@ struct ConvGemmRewritePattern : public OpRewritePattern<ConvElementwiseGemmOp> {
         b, loc, op->getResultTypes(), gemmInput, gemmFilter, op.getC(),
         op.getElemwiseInputs(),
         /*aTransposed=*/b.getUnitAttr(), /*bTransposed=*/nullptr,
-        op.getCTransposedAttr(), op.getOTransposedAttr(), op.getParams0Attr(),
-        op.getParams1Attr());
+        op.getCTransposedAttr(), op.getOTransposedAttr(), /*causal=*/UnitAttr{},
+        op.getParams0Attr(), op.getParams1Attr());
 
     // copy fusions if there are any
     bool hasFusion = rock::gemmGemmHasPreSecondGemmFusion(op);
