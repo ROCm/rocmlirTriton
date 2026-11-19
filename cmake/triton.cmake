@@ -262,9 +262,6 @@ list(APPEND TRITON_INCLUDE_DIRS
   ${TRITON_BINARY_DIR}/third_party/nvidia
   ${TRITON_BINARY_DIR}/third_party/nvidia/include
 )
-if(WIN32)
-  list(APPEND TRITON_INCLUDE_DIRS ${TRITON_PROJECT_DIR}/third_party/dlfcn-win32)
-endif()
 
 #===----------------------------------------------------------------------===//
 # For lit testing configuration
