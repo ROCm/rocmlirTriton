@@ -269,6 +269,22 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
                << "bReloads: " << (bReloads ? "yes" : "no") << "\n");
 
     Type accType = rock::getAccType(elementTypeA, elementTypeB);
+
+    // TODO: Move this to a generic place (AmdArchDb)
+    if (arch.contains("gfx1250") && (accType == b.getF32Type()) &&
+        elemTypeOut.getIntOrFloatBitWidth() <= 16) {
+      if (elementTypeA.getIntOrFloatBitWidth() == 16 &&
+          elementTypeB.getIntOrFloatBitWidth() == 16 &&
+          elemTypeOut.getIntOrFloatBitWidth() == 16 &&
+          elementTypeA == elementTypeB && elementTypeB == elemTypeOut) {
+        accType = elementTypeA;
+      } else if (elementTypeA.getIntOrFloatBitWidth() == 8 &&
+                 elementTypeB.getIntOrFloatBitWidth() == 8 &&
+                 !isa<BFloat16Type>(elemTypeOut)) {
+        accType = b.getF16Type();
+      }
+    }
+
     Value initAcc =
         rock::createZeroAccBuffer(b, loc, {mPerBlock, nPerBlock}, accType);
 
