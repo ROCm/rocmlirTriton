@@ -141,6 +141,125 @@ chooseGemmLoadCacheModifiers(StringRef arch, Type aElemType, Type bElemType,
 
 namespace {
 
+// Emit the K reduction for one (m, n) output tile of `op` and return the final
+// accumulator.
+//
+// `kPerBlock` is a power of two, but K need not be a multiple of it: GemmToGridwise
+// leaves K unpadded whenever kTailPeelingPays says the padding would narrow the
+// loop's loads below a dword. The evenly tiled region [0, kMain), where
+// kMain = (K / kPerBlock) * kPerBlock, runs in the main loop -- one
+// blockwise_gemm of width kPerBlock per iteration, which is byte for byte the
+// loop emitted when K already divides evenly. The leftover [kMain, K) is
+// *peeled*: split into power-of-two K segments and contracted once each after
+// the loop, threading the same register accumulator.
+//
+// The point is what the main loop no longer has. Its operands carry no Pad, so
+// no validity mask is generated for them, so the width Triton picks is not
+// clamped by a final tile that reads past the data. The narrow loads still
+// exist, but only in the peeled tail, where they run once instead of on every
+// iteration.
+//
+// When K is a multiple of kPerBlock (every padded GEMM, and any shape the gate
+// declines) kRem is 0, decomposePow2 returns nothing, and this emits exactly
+// the pre-existing single loop.
+static Value emitKReductionLoop(PatternRewriter &b, Location loc,
+                                GridwiseGemmOp op, Value matA, Value matB,
+                                Value scaleA, Value scaleB, Value initAcc,
+                                rock::layout::GridCoordinates gridCoords,
+                                SmallVector<int64_t, 3> &bidGridLengths,
+                                rock::CacheModifier cacheA,
+                                rock::CacheModifier cacheB,
+                                int64_t quantKPerBlock) {
+  int64_t K = cast<ShapedType>(matA.getType()).getShape()[2];
+  GemmParamsAttr params = op.getParams();
+  int64_t kPerBlock = params.getKPerBlock();
+  int64_t mPerBlock = params.getMPerBlock();
+  int64_t nPerBlock = params.getNPerBlock();
+  bool isScaledGemm = scaleA && scaleB;
+
+  int64_t kIterations = K / kPerBlock;
+  int64_t kMain = kIterations * kPerBlock;
+  int64_t kRem = K - kMain;
+
+  // Slice the contiguous K range [start, start + len) out of a gridwise operand
+  // (dim 2 of A [G, M, K], dim 1 of B [G, K, N]). A range covering the whole K
+  // dimension returns the operand untouched, so the divides-evenly path emits
+  // no transforms at all.
+  auto sliceK = [&](Value mat, unsigned kDim, int64_t start,
+                    int64_t len) -> Value {
+    int64_t kSize = cast<ShapedType>(mat.getType()).getShape()[kDim];
+    if (start == 0 && len == kSize)
+      return mat;
+    return sliceBlockedDims(b, loc, mat, /*sliceDims=*/{kDim}, /*blocks=*/{1},
+                            /*tiles=*/{kSize}, {Pow2Segment{start, len}});
+  };
+
+  // Emit the A/B (and, for scaled GEMMs, scale) loads plus the blockwise_gemm
+  // for one K tile of width `segLen` at K block `kIter` of the given views,
+  // reducing into `acc`.
+  auto contract = [&](Value aView, Value bView, Value kIter, int64_t segLen,
+                      Value acc) -> Value {
+    Value loadedB =
+        rock::loadTile(b, loc, bView, kIter, "n", gridCoords, segLen, nPerBlock,
+                       /*isKFirst=*/true, bidGridLengths, cacheB);
+    Value loadedA =
+        rock::loadTile(b, loc, aView, kIter, "m", gridCoords, segLen, mPerBlock,
+                       /*isKFirst=*/false, bidGridLengths, cacheA);
+
+    Value loadedScaleA, loadedScaleB;
+    if (isScaledGemm) {
+      // Note we load with dName="m" here because the shape of scaleB is [B, N,
+      // K] instead of [B, K, N]. This is because tt.dot_scaled expected scaleB
+      // transposed. Scales share the reuse pattern of the operand they scale,
+      // so reuse the same cache modifier chosen for A/B above.
+      loadedScaleB =
+          rock::loadTile(b, loc, scaleB, kIter, "n", gridCoords, quantKPerBlock,
+                         nPerBlock, /*isKFirst=*/false, bidGridLengths, cacheB);
+      loadedScaleA =
+          rock::loadTile(b, loc, scaleA, kIter, "m", gridCoords, quantKPerBlock,
+                         mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
+    }
+
+    // Emit blockwise GEMM. This will load data from LDS (or registers) and
+    // compute the MMA at the same time.
+    return BlockwiseGemmOp::create(
+        b, loc, loadedA, loadedB, acc, loadedScaleA, loadedScaleB,
+        op.getQuantBlockSizeAttr(),
+        /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
+        /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
+  };
+
+  Value acc = initAcc;
+  if (kMain > 0) {
+    Value matAMain = sliceK(matA, /*kDim=*/2, /*start=*/0, /*len=*/kMain);
+    Value matBMain = sliceK(matB, /*kDim=*/1, /*start=*/0, /*len=*/kMain);
+    Value nIterations =
+        ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
+    scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{acc});
+    {
+      PatternRewriter::InsertionGuard guard(b);
+      b.setInsertionPointToStart(loopOp.getBody());
+      Value newAcc = contract(matAMain, matBMain, loopOp.getInductionVar(),
+                              kPerBlock, loopOp.getRegionIterArg(0));
+      scf::YieldOp::create(b, loc, ValueRange{newAcc});
+    }
+    acc = loopOp.getResult(0);
+  }
+
+  // The tail is a single K block of each segment's width, so its block index is
+  // always 0; the segment's offset within K is already baked into the view.
+  if (kRem > 0) {
+    Value kZero = ConstantIntOp::create(b, loc, b.getI32Type(), 0);
+    for (Pow2Segment seg : decomposePow2(kRem)) {
+      Value aTail = sliceK(matA, /*kDim=*/2, kMain + seg.offset, seg.length);
+      Value bTail = sliceK(matB, /*kDim=*/1, kMain + seg.offset, seg.length);
+      acc = contract(aTail, bTail, kZero, seg.length, acc);
+    }
+  }
+
+  return acc;
+}
+
 //===----------------------------------------------------------------------===//
 // GridwiseGemm lowering.
 //===----------------------------------------------------------------------===//
@@ -272,63 +391,27 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     Value initAcc =
         rock::createZeroAccBuffer(b, loc, {mPerBlock, nPerBlock}, accType);
 
-    // Emit loop with iter_args for the accumulator
-    int64_t kIterations = K / kPerBlock;
-    Value nIterations =
-        ConstantIntOp::create(b, loc, b.getI32Type(), kIterations);
+    // Choose cache modifiers for the operands based on data reuse: a skinny
+    // GEMM streams the large (low-reuse) operand to avoid evicting the one
+    // that is actually reused across workgroups.
+    auto [cacheA, cacheB] = chooseGemmLoadCacheModifiers(
+        arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks, nBlocks,
+        aReloads, bReloads);
 
-    scf::ForOp loopOp = createMainLoop(b, loc, nIterations, ValueRange{initAcc});
-    Value loopResult;
-    {
-      PatternRewriter::InsertionGuard guard(b);
-      b.setInsertionPointToStart(loopOp.getBody());
-      Value iv = loopOp.getInductionVar();
-      Value accArg = loopOp.getRegionIterArg(0);
-
-      // Choose cache modifiers for the operands based on data reuse: a skinny
-      // GEMM streams the large (low-reuse) operand to avoid evicting the one
-      // that is actually reused across workgroups.
-      auto [cacheA, cacheB] = chooseGemmLoadCacheModifiers(
-          arch, elementTypeALoad, elementTypeBLoad, G, M, N, K, mBlocks,
-          nBlocks, aReloads, bReloads);
-
-      // Load from global memory to registers
-      Value loadedB =
-          rock::loadTile(b, loc, matB, /*kiter=*/iv, "n", gridCoords, kPerBlock,
-                         nPerBlock, /*isKFirst=*/true, bidGridLengths, cacheB);
-      Value loadedA =
-          rock::loadTile(b, loc, matA, /*kiter=*/iv, "m", gridCoords, kPerBlock,
-                         mPerBlock, /*isKFirst=*/false, bidGridLengths, cacheA);
-
-      Value loadedScaleA, loadedScaleB;
-      if (isScaledGemm) {
-        // Note we load with dName="m" here because the shape of scaleB is [B,
-        // N, K] instead of [B, K, N]. This is because tt.dot_scaled expected
-        // scaleB transposed
-        // Scales share the reuse pattern of the operand they scale, so reuse
-        // the same cache modifier chosen for A/B above.
-        loadedScaleB =
-            rock::loadTile(b, loc, scaleB, /*kiter=*/iv, "n", gridCoords,
-                           quantKPerBlock, nPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheB);
-        loadedScaleA =
-            rock::loadTile(b, loc, scaleA, /*kiter=*/iv, "m", gridCoords,
-                           quantKPerBlock, mPerBlock,
-                           /*isKFirst=*/false, bidGridLengths, cacheA);
-      }
-
-      // Emit blockwise GEMM. This will load data from LDS (or registers) and
-      // compute the MMA at the same time
-      Value newAcc = BlockwiseGemmOp::create(
-          b, loc, loadedA, loadedB, accArg, loadedScaleA, loadedScaleB,
-          op.getQuantBlockSizeAttr(),
-          /*matrixAOrigElemType=*/nullptr, /*matrixBOrigElemType=*/nullptr,
-          /*matrixAKPack=*/nullptr, /*matrixBKPack=*/nullptr);
-
-      // Yield the new accumulator
-      scf::YieldOp::create(b, loc, ValueRange{newAcc});
-      loopResult = loopOp.getResult(0);
+    // GemmToGridwise only leaves K unpadded for plain GEMMs, so a scaled GEMM
+    // reaching here with a short K would peel its scale loads at a tail index
+    // the scale views cannot express. Reject it rather than miscompile.
+    if (isScaledGemm && (K % kPerBlock != 0)) {
+      rock::markAsNotApplicable(op);
+      return op->emitOpError("a K that is not a multiple of kPerBlock is not "
+                             "supported for scaled gemm");
     }
+
+    // Reduce over K with an evenly tiled main loop plus a peeled power-of-two
+    // tail (see emitKReductionLoop).
+    Value loopResult = emitKReductionLoop(
+        b, loc, op, matA, matB, scaleA, scaleB, initAcc, gridCoords,
+        bidGridLengths, cacheA, cacheB, quantKPerBlock);
 
     // Compute output transforms
     FailureOr<ArrayAttr> maybeOutputViews =
