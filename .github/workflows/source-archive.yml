@@ -1,11 +1,8 @@
 name: Source Archive
 
 # Produces a self-contained source tarball: the repo plus all the dependencies.
-# Point FETCHCONTENT_BASE_DIR to <source>/external to place
-# dependencies *inside* the source tree, so CPack's
-# source generator picks them up.
-# On a push to develop the archive is published as a release asset at
-#   <server>/<repo>/releases/download/source-<commit>/<commit>.tar.xz
+# Points FETCHCONTENT_BASE_DIR to <source>/external to place dependencies
+# *inside* the source tree, so CPack's source generator picks them up.
 #
 # NOTE for consumers of the archive: because the *-subbuild/ stamp directories
 # are stripped, a plain `cmake -B build -DFETCHCONTENT_BASE_DIR=external` on an
@@ -15,9 +12,7 @@ name: Source Archive
 on:
   push:
     branches:
-      # TEMPORARY: testing on the feature branch. Switch this to `develop`
-      # (and drop --prerelease below) once a run has been verified end to end.
-      - create-source-archive
+      - develop
 
 # One archive per ref is enough; supersede an in-flight run on a new push.
 concurrency:
@@ -84,7 +79,6 @@ jobs:
           mv "$src" "$RUNNER_TEMP/artifact/rocmlirTriton.tar.xz"
           ls -lh "$RUNNER_TEMP/artifact"
 
-      # --prerelease marks these as pre-releases (TEMPORARY, for testing)
       - name: Publish release
         run: |
           set -euo pipefail
@@ -94,8 +88,7 @@ jobs:
             gh release create "$TAG" \
               -R "$GITHUB_REPOSITORY" \
               --target "$SHA" \
-              --title "Source archive" \
-              --prerelease
+              --title "Source archive"
           fi
 
           gh release upload "$TAG" "$file" -R "$GITHUB_REPOSITORY" --clobber
