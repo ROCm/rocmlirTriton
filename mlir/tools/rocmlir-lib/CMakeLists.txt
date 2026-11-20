@@ -257,6 +257,15 @@ if(BUILD_FAT_LIBROCKCOMPILER)
     set(extra_include_dir ${CMAKE_INSTALL_INCLUDEDIR}/${PACKAGE_NAME}/external/include)
   endif()
 
+  # Tell package consumers where triton_amd_codegen is installed. The value is
+  # substituted into rocMLIRConfig.cmake.in (relative to the package prefix).
+  get_filename_component(TRITON_AMD_CODEGEN_LIBNAME "${ROCMLIR_TRITON_AMD_CODEGEN_LIBRARY}" NAME)
+  if(WIN32)
+    set(TRITON_AMD_CODEGEN_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
+  else()
+    set(TRITON_AMD_CODEGEN_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}")
+  endif()
+
   # Install ${LIBRARY_NAME} as component of ${PACKAGE_NAME}
   # and export it to be searchable by find_package()
   export_target(${PACKAGE_NAME} # package name
