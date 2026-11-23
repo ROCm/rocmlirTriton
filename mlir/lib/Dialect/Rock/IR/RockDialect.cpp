@@ -130,6 +130,26 @@ static LogicalResult verifyScales(OpType op, Value matrix, Value scale,
   return success();
 }
 
+// f8E4M3FN is the gfx1250 scale used by v_wmma_scale16 (block 16) and by the
+// fp4 side of a mixed pair. The legal pairs match the 16x16x128 f8f6f4
+// instruction; FP6 stays out because Triton cannot lower it. E8M0/E8M0 pairs
+// are not checked here.
+static LogicalResult verifyE4M3ScaledWmmaCombo(Operation *op, Type elemA,
+                                              Type scaleA, Type elemB,
+                                              Type scaleB) {
+  auto isE4M3Scale = [](Type scale) {
+    return scale && isa<Float8E4M3FNType>(scale);
+  };
+  if (!isE4M3Scale(scaleA) && !isE4M3Scale(scaleB))
+    return success();
+  if (isLegalScaledWmmaTypeCombo(elemA, scaleA, elemB, scaleB))
+    return success();
+  return op->emitOpError(
+      "f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides, or "
+      "mixed fp8/fp4 with f8E4M3FN on the fp4 side and f8E8M0FNU on the "
+      "fp8 side");
+}
+
 //===----------------------------------------------------------------------===//
 // RockDialect Interfaces
 //===----------------------------------------------------------------------===//
@@ -1394,8 +1414,8 @@ LogicalResult GemmOp::verify() {
     return failure();
 
   // E4M3 scales use the 16-wide WMMA scale intrinsic. TTIR accepts only 16 or
-  // 32, and a mixed E8M0/E4M3 pair is legal only when both sides share this
-  // block size. E8M0 block-32 graphs are unchanged.
+  // 32. A mixed E8M0/E4M3 pair is legal only for mixed fp8/fp4, checked
+  // below. E8M0 block-32 graphs are unchanged.
   auto isE4M3Scale = [](Value scale) {
     return scale && isa<Float8E4M3FNType>(
                         cast<ShapedType>(scale.getType()).getElementType());
@@ -1403,6 +1423,14 @@ LogicalResult GemmOp::verify() {
   if ((isE4M3Scale(getScaleA()) || isE4M3Scale(getScaleB())) &&
       getQuantBlockSize().value_or(0) != 16)
     return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+
+  if (hasScaleA &&
+      failed(verifyE4M3ScaledWmmaCombo(
+          getOperation(), typeA.getElementType(),
+          cast<ShapedType>(getScaleA().getType()).getElementType(),
+          typeB.getElementType(),
+          cast<ShapedType>(getScaleB().getType()).getElementType())))
+    return failure();
 
   if (getParams().has_value() && getQuantBlockSize().has_value()) {
     int64_t quantBlockSize = getQuantBlockSize().value();
@@ -1493,7 +1521,8 @@ LogicalResult GridwiseGemmOp::verify() {
     return failure();
   }
   // Same rule as GemmOp: an E4M3 scale, on either side, uses the 16-wide
-  // WMMA scale intrinsic. A mixed E8M0/E4M3 pair is legal at that block size.
+  // WMMA scale intrinsic. A mixed E8M0/E4M3 pair is legal only for the
+  // fp8/fp4 combinations checked below.
   auto isE4M3Scale = [](Value scale) {
     return scale && isa<Float8E4M3FNType>(
                         cast<ShapedType>(scale.getType()).getElementType());
@@ -1501,6 +1530,13 @@ LogicalResult GridwiseGemmOp::verify() {
   if ((isE4M3Scale(scaleA) || isE4M3Scale(scaleB)) &&
       getQuantBlockSize().value_or(0) != 16)
     return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+  if (hasScaleA &&
+      failed(verifyE4M3ScaledWmmaCombo(
+          getOperation(), getA().getType().getElementType(),
+          cast<ShapedType>(scaleA.getType()).getElementType(),
+          getB().getType().getElementType(),
+          cast<ShapedType>(scaleB.getType()).getElementType())))
+    return failure();
   return verifyGridwiseGemm(*this);
 }
 
@@ -1679,6 +1715,19 @@ LogicalResult BlockwiseGemmOp::verify() {
   if ((isE4M3Scale(getMatrixScaleA()) || isE4M3Scale(getMatrixScaleB())) &&
       getQuantBlockSize().value_or(0) != 16)
     return emitOpError("f8E4M3FN scales require quantBlockSize 16");
+
+  if (hasScaleA) {
+    Type elemA = getMatrixAOrigElemType().value_or(
+        cast<ShapedType>(getMatrixA().getType()).getElementType());
+    Type elemB = getMatrixBOrigElemType().value_or(
+        cast<ShapedType>(getMatrixB().getType()).getElementType());
+    if (failed(verifyE4M3ScaledWmmaCombo(
+            getOperation(), elemA,
+            cast<ShapedType>(getMatrixScaleA().getType()).getElementType(),
+            elemB,
+            cast<ShapedType>(getMatrixScaleB().getType()).getElementType())))
+      return failure();
+  }
 
   return success();
 }

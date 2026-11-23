@@ -22,7 +22,7 @@ struct ArchTestEnv {
   MLIRContext ctx;
   OpBuilder b;
   Type f32, f16, bf16, i32, i8;
-  Type f8e4m3fn, f8e4m3fnuz, f8e5m2, f6e3m2fn, f6e2m3fn, f4e2m1fn;
+  Type f8e4m3fn, f8e4m3fnuz, f8e5m2, f8e8m0, f6e3m2fn, f6e2m3fn, f4e2m1fn;
 
   ArchTestEnv() : b(&ctx) {
     f32 = b.getF32Type();
@@ -33,6 +33,7 @@ struct ArchTestEnv {
     f8e4m3fn = Float8E4M3FNType::get(&ctx);
     f8e4m3fnuz = Float8E4M3FNUZType::get(&ctx);
     f8e5m2 = Float8E5M2Type::get(&ctx);
+    f8e8m0 = Float8E8M0FNUType::get(&ctx);
     f6e3m2fn = Float6E3M2FNType::get(&ctx);
     f6e2m3fn = Float6E2M3FNType::get(&ctx);
     f4e2m1fn = Float4E2M1FNType::get(&ctx);
@@ -373,13 +374,17 @@ TEST(AmdArchDbTest, MatrixAccelScaledMfma) {
 
 TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
   ArchTestEnv e;
-  // ScaledWMMA: gfx1250 (wmmaVersion 3) with supported F8/F4 types + scales
+  // ScaledWMMA: gfx1250 (wmmaVersion 3) with supported F8/F4 types + scales.
+  // A non-scale type such as f32 only means "scales are present".
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f8e4m3fn, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
-  // E4M3 scales are ScaledWMMA on gfx1250 and unsupported on gfx950.
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f8e4m3fn, e.f8e8m0,
+                               e.f8e8m0),
+            MatrixAccelKind::ScaledWMMA);
+  // f8 x f8 with f8E4M3FN scales is not a legal scale/scale16 pair.
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f8e4m3fn, e.f8e4m3fn,
                                e.f8e4m3fn),
-            MatrixAccelKind::ScaledWMMA);
+            MatrixAccelKind::None);
   EXPECT_EQ(getMatrixAccelKind("gfx950", e.f8e4m3fn, e.f8e4m3fn, e.f8e4m3fn,
                                e.f8e4m3fn),
             MatrixAccelKind::None);
@@ -388,11 +393,23 @@ TEST(AmdArchDbTest, MatrixAccelScaledWmma) {
             MatrixAccelKind::ScaledMFMA);
   EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e5m2, e.f8e5m2, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
-  // TODO: F4 (E2M1) and F6 (E3M2, E2M3) should also return ScaledWMMA on
-  // gfx1250, but the Triton WmmaGroup intrinsic database doesn't have these
-  // entries yet. Update these to EXPECT_EQ once upstreamed.
-  EXPECT_NE(getMatrixAccelKind("gfx1250", e.f4e2m1fn, e.f4e2m1fn, e.f32, e.f32),
+  // fp4 uses v_wmma_scale / v_wmma_scale16, including mixed f8/f4.
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f4e2m1fn, e.f4e2m1fn, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f4e2m1fn, e.f4e2m1fn, e.f8e4m3fn,
+                               e.f8e4m3fn),
+            MatrixAccelKind::ScaledWMMA);
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f8e4m3fn, e.f4e2m1fn, e.f8e8m0,
+                               e.f8e4m3fn),
+            MatrixAccelKind::ScaledWMMA);
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f4e2m1fn, e.f8e5m2, e.f8e4m3fn,
+                               e.f8e8m0),
+            MatrixAccelKind::ScaledWMMA);
+  // fp4 x fp4 does not accept a mixed E8M0/E4M3 scale pair.
+  EXPECT_EQ(getMatrixAccelKind("gfx1250", e.f4e2m1fn, e.f4e2m1fn, e.f8e8m0,
+                               e.f8e4m3fn),
+            MatrixAccelKind::None);
+  // FP6 is a format bit on the same instruction, but Triton does not lower it.
   EXPECT_NE(getMatrixAccelKind("gfx1250", e.f6e3m2fn, e.f6e3m2fn, e.f32, e.f32),
             MatrixAccelKind::ScaledWMMA);
   EXPECT_NE(getMatrixAccelKind("gfx1250", e.f6e2m3fn, e.f6e2m3fn, e.f32, e.f32),
@@ -484,6 +501,22 @@ TEST(AmdArchDbTest, AccelInstrMinKDimWmma) {
   // gfx1250 is the only arch with an f32 WMMA input path
   // (wmma_f32_16x16x4_f32).
   EXPECT_EQ(minKDim("gfx1250", e.f32, e.f32, 16), 4);
+}
+
+TEST(AmdArchDbTest, AccelInstrMinKDimScaledWmma) {
+  ArchTestEnv e;
+  // v_wmma_scale and v_wmma_scale16 are both K=128. The unscaled f8 table
+  // also has K=64, which cannot carry scale operands.
+  auto scaledK = [](Type a, Type b, Type scaleA, Type scaleB) {
+    FailureOr<int64_t> kDim =
+        getAccelInstrMinKDim("gfx1250", a, b, /*instrNonKDim=*/16, scaleA,
+                             scaleB);
+    EXPECT_TRUE(succeeded(kDim));
+    return succeeded(kDim) ? *kDim : 0;
+  };
+  EXPECT_EQ(scaledK(e.f8e4m3fn, e.f8e4m3fn, e.f8e8m0, e.f8e8m0), 128);
+  EXPECT_EQ(scaledK(e.f4e2m1fn, e.f4e2m1fn, e.f8e4m3fn, e.f8e4m3fn), 128);
+  EXPECT_EQ(scaledK(e.f8e5m2, e.f4e2m1fn, e.f8e8m0, e.f8e4m3fn), 128);
 }
 
 TEST(AmdArchDbTest, AccelInstrMinKDimNoAccel) {

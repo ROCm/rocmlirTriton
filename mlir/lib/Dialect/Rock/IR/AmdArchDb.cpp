@@ -127,22 +127,86 @@ static bool hasMfmaSupport(Location loc, int mfmaVersion, Type elemA,
   return false;
 }
 
+/// Types the gfx1250 scaled WMMA path can lower. The f8f6f4 instruction
+/// also encodes f6E2M3FN and f6E3M2FN, but Triton's scaled-WMMA lowering
+/// rejects FP6, so those types stay off this path.
+static bool isScaledWmmaType(Type type) {
+  return isa<Float8E4M3FNType, Float8E5M2Type, Float4E2M1FNType>(type);
+}
+
 /// Check if scaled WMMA is supported for the given types.
-/// gfx1250 (WMMA version 3) supports scaled operations for F8/F4 types using
-/// WMMA intrinsics with kDim=128. Unlike scaled MFMA, there's no separate
-/// "withScale" flag - the fp8/fp4 WMMA intrinsics ARE the scaled instructions.
+/// gfx1250 (WMMA version 3) scales f8/f4 inputs with the dedicated
+/// `v_wmma_scale` (block 32) and `v_wmma_scale16` (block 16) instructions.
+/// Those live in Triton's WmmaScaleIntrinsic table, not in the unscaled
+/// WmmaIntrinsic table (which has no f4 entries). The 16x16x128 f8f6f4
+/// intrinsic covers every pair this function accepts, including mixed f8/f4.
 static bool hasScaledWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
                                  Type elemOut) {
   // Scaled WMMA is only available on gfx1250 (wmmaVersion 3)
   if (wmmaVersion < 3)
     return false;
+  if (!isScaledWmmaType(elemA) || !isScaledWmmaType(elemB))
+    return false;
 
-  // Use large K to match any intrinsic - gfx1250 fp8 WMMA uses kDim=128
-  constexpr unsigned largeK = 512;
+  // WmmaScaleIntrinsic::get keys on the instruction family, not the element
+  // types, so the isScaledWmmaType filter above is what excludes f16/f6.
+  // Either block size is enough to say the arch can accelerate the pair.
+  for (bool isScale16 : {false, true}) {
+    auto result = WmmaScaleIntrinsic::get(
+        wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, elemA, elemB, elemOut,
+        isScale16, /*isTransposed=*/false);
+    if (succeeded(result))
+      return true;
+  }
+  return false;
+}
 
-  auto result = WmmaIntrinsic::selectFor(
-      wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
-  return succeeded(result);
+static bool isE8M0ScaleType(Type scaleType) {
+  Type elem = getElementTypeOrSelf(scaleType);
+  return isa<Float8E8M0FNUType>(elem) || elem.isInteger(8);
+}
+
+static bool isE4M3ScaleType(Type scaleType) {
+  return isa<Float8E4M3FNType>(getElementTypeOrSelf(scaleType));
+}
+
+static bool isConcreteScaleType(Type scaleType) {
+  return static_cast<bool>(scaleType) &&
+         (isE8M0ScaleType(scaleType) || isE4M3ScaleType(scaleType));
+}
+
+bool mlir::rock::isLegalScaledWmmaTypeCombo(Type elemA, Type scaleA, Type elemB,
+                                            Type scaleB) {
+  if (!scaleA || !scaleB)
+    return false;
+  elemA = getElementTypeOrSelf(elemA);
+  elemB = getElementTypeOrSelf(elemB);
+
+  auto isF8 = [](Type type) {
+    return isa<Float8E4M3FNType, Float8E5M2Type>(type);
+  };
+  auto isF4 = [](Type type) { return isa<Float4E2M1FNType>(type); };
+  const bool aF8 = isF8(elemA);
+  const bool bF8 = isF8(elemB);
+  const bool aF4 = isF4(elemA);
+  const bool bF4 = isF4(elemB);
+  if (!(aF8 || aF4) || !(bF8 || bF4))
+    return false;
+
+  const bool aE8 = isE8M0ScaleType(scaleA);
+  const bool bE8 = isE8M0ScaleType(scaleB);
+  const bool aE4 = isE4M3ScaleType(scaleA);
+  const bool bE4 = isE4M3ScaleType(scaleB);
+  // Block 32 (`v_wmma_scale`) and block 16 (`v_wmma_scale16`) share this set.
+  if (aE8 && bE8)
+    return true;
+  if (aF8 && bF4 && aE8 && bE4)
+    return true;
+  if (aF4 && bF8 && aE4 && bE8)
+    return true;
+  if (aF4 && bF4 && aE4 && bE4)
+    return true;
+  return false;
 }
 
 /// Check if WMMA is supported for the given types on the specified version.
@@ -154,13 +218,6 @@ static bool hasWmmaSupport(int wmmaVersion, Type elemA, Type elemB,
   auto result = WmmaIntrinsic::selectFor(
       wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, largeK, elemA, elemB, elemOut);
   return succeeded(result);
-}
-
-/// Check if a type is valid for scaled WMMA on gfx1250.
-/// gfx1250 supports only E2M1, E4M3, E5M2 (NOT E3M2, E2M3).
-/// See ScaledBlockedToScaledWMMAF8F6F4 in AccelerateAMDMatmul.cpp
-static bool isScaledWmmaType(Type type) {
-  return isa<Float8E4M3FNType, Float8E5M2Type, Float4E2M1FNType>(type);
 }
 
 MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
@@ -215,15 +272,22 @@ MatrixAccelKind mlir::rock::getMatrixAccelKind(StringRef arch, Type inputTypeA,
 
   // Check WMMA support (RDNA architectures)
   if (wmmaVersion > 0) {
-    // Scaled WMMA requires: gfx1250 (version 3) + specific types (E4M3, E5M2,
-    // E2M1) Note: gfx1250 does NOT support E3M2 or E2M3 for scaled ops. See
-    // supportsTypes() in ScaledBlockedToScaledWMMAF8F6F4
+    // Scaled WMMA requires gfx1250 (version 3) and f8E4M3FN / f8E5M2 /
+    // f4E2M1FN, including mixed f8/f4. FP6 is a hardware format on the same
+    // instruction, but Triton does not lower it.
     bool canUseScaledWmma = hasScales && wmmaVersion >= 3 &&
                             isScaledWmmaType(elemA) && isScaledWmmaType(elemB);
 
     if (canUseScaledWmma &&
         hasScaledWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
-      return MatrixAccelKind::ScaledWMMA;
+      // Dummy scale types (the arch probe passes f32 or f8E5M2) only mean
+      // "scales are present". A real E8M0/E4M3 pair has to be one of the
+      // combinations the scale and scale16 instructions accept.
+      bool concreteScales = isConcreteScaleType(scaleAType) &&
+                            isConcreteScaleType(scaleBType);
+      if (!concreteScales ||
+          isLegalScaledWmmaTypeCombo(elemA, scaleAType, elemB, scaleBType))
+        return MatrixAccelKind::ScaledWMMA;
     }
     // Fallback to regular WMMA. An E4M3 scale has no unscaled lowering.
     if (!e4m3Scale && hasWmmaSupport(wmmaVersion, elemA, elemB, elemOut)) {
@@ -295,6 +359,16 @@ mlir::rock::getAccelInstrMinKDim(StringRef arch, Type inputTypeA,
 
   if (accelKind == MatrixAccelKind::WMMA ||
       accelKind == MatrixAccelKind::ScaledWMMA) {
+    // Scaled WMMA always consumes K=128. The unscaled f8 table also has a
+    // K=64 instruction, which cannot carry the scale operands.
+    if (accelKind == MatrixAccelKind::ScaledWMMA) {
+      int wmmaVersion = rock::getWmmaVersion(isaFamily);
+      auto scaleInstr = WmmaScaleIntrinsic::get(
+          wmmaVersion, kWmmaNonKDim, kWmmaNonKDim, elemA, elemB, elemOut,
+          /*isScale16=*/false, /*isTransposed=*/false);
+      if (succeeded(scaleInstr))
+        return static_cast<int64_t>(scaleInstr->kDim);
+    }
     auto instr = WmmaIntrinsic::selectFor(rock::getWmmaVersion(isaFamily),
                                           kWmmaNonKDim, kWmmaNonKDim, narrowest,
                                           elemA, elemB, elemOut);
