@@ -31,10 +31,21 @@ set(ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH "rmt-amd-2026-11-18"
 set(ROCMLIR_AMD_CODEGEN_LLVM_REVISION "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}-1"
     CACHE STRING
     "Revision string baked into triton_amd_codegen (triton_amdgpu_revision())")
+# When set, triton_amd_codegen links this LLVM's shared library (e.g. the HIP
+# SDK's) instead of building the pinned AMD codegen LLVM statically. That LLVM
+# must be built with LLVM_LINK_LLVM_DYLIB and be at or after the pinned branch.
+set(ROCMLIR_AMD_CODEGEN_LLVM_DIR "" CACHE PATH
+    "LLVM CMake package dir of a shared LLVM for triton_amd_codegen")
+set(ROCMLIR_AMD_CODEGEN_PREFIX_PATH "" CACHE STRING
+    "Extra CMAKE_PREFIX_PATH for triton_amd_codegen (LLVM's zlib/zstd/libxml2)")
 
 message(STATUS "Fetching LLVM/MLIR: ${ROCMLIR_LLVM_GIT_REPOSITORY}@${ROCMLIR_LLVM_GIT_BRANCH}")
 message(STATUS "Fetching Triton:    ${ROCMLIR_TRITON_GIT_REPOSITORY}@${ROCMLIR_TRITON_GIT_BRANCH}")
-message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}")
+if(ROCMLIR_AMD_CODEGEN_LLVM_DIR)
+  message(STATUS "AMD Codegen LLVM: shared, from ${ROCMLIR_AMD_CODEGEN_LLVM_DIR}")
+else()
+  message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}")
+endif()
 
 FetchContent_Declare(
   llvm-project
@@ -56,18 +67,21 @@ FetchContent_Declare(
   # Download only: no CMakeLists.txt here, so MakeAvailable skips add_subdirectory.
   SOURCE_SUBDIR do-not-auto-add)
 
-FetchContent_Declare(
-  amd-codegen-llvm
-  URL "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}.tar.gz"
-  # GIT_REPOSITORY "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}"
-  # GIT_TAG "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}"
-  # GIT_SHALLOW TRUE
-  # GIT_PROGRESS TRUE
-  # Download only: We have to build with ExternalProject_Add() to isolate from other llvm-project
-  SOURCE_SUBDIR do-no-auto-add
-)
+if(NOT ROCMLIR_AMD_CODEGEN_LLVM_DIR)
+  FetchContent_Declare(
+    amd-codegen-llvm
+    URL "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}.tar.gz"
+    # GIT_REPOSITORY "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}"
+    # GIT_TAG "${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}"
+    # GIT_SHALLOW TRUE
+    # GIT_PROGRESS TRUE
+    # Download only: We have to build with ExternalProject_Add() to isolate from other llvm-project
+    SOURCE_SUBDIR do-no-auto-add
+  )
+  FetchContent_MakeAvailable(amd-codegen-llvm)
+endif()
 
-FetchContent_MakeAvailable(llvm-project triton amd-codegen-llvm)
+FetchContent_MakeAvailable(llvm-project triton)
 
 #===----------------------------------------------------------------------===//
 # Paths for building rocmlirTriton
@@ -481,35 +495,47 @@ foreach(_var
 endforeach()
 set(triton_amd_codegen_libname "${CMAKE_SHARED_LIBRARY_PREFIX}triton_amd_codegen${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
-ExternalProject_Add(amd_codegen_llvm_build
-  SOURCE_DIR ${amd-codegen-llvm_SOURCE_DIR}
-  PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/llvm"
-  SOURCE_SUBDIR llvm
-  CMAKE_ARGS
-    ${_amd_codegen_tool_args}
-	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-    -DLLVM_ENABLE_PROJECTS=
-    -DLLVM_TARGETS_TO_BUILD=AMDGPU
-    -DLLVM_BUILD_UTILS=OFF
-    -DLLVM_INCLUDE_TESTS=OFF
-    -DLLVM_ENABLE_ASSERTIONS=ON
-    -DLLVM_ENABLE_ZSTD=OFF
-  INSTALL_COMMAND ""
-  BUILD_BYPRODUCTS "<BINARY_DIR>/lib/cmake/llvm/LLVMConfig.cmake"
-  USES_TERMINAL_CONFIGURE TRUE
-  USES_TERMINAL_BUILD TRUE)
+if(ROCMLIR_AMD_CODEGEN_LLVM_DIR)
+  set(_amd_codegen_llvm_dir "${ROCMLIR_AMD_CODEGEN_LLVM_DIR}")
+  set(_amd_codegen_depends "")
+  list(APPEND _amd_codegen_tool_args -DTRITON_AMD_CODEGEN_SHARED_LLVM=ON)
+  set(_amd_codegen_cache_args
+    "-DCMAKE_PREFIX_PATH:STRING=${ROCMLIR_AMD_CODEGEN_PREFIX_PATH}")
+else()
+  ExternalProject_Add(amd_codegen_llvm_build
+    SOURCE_DIR ${amd-codegen-llvm_SOURCE_DIR}
+    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/llvm"
+    SOURCE_SUBDIR llvm
+    CMAKE_ARGS
+      ${_amd_codegen_tool_args}
+      "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+      -DLLVM_ENABLE_PROJECTS=
+      -DLLVM_TARGETS_TO_BUILD=AMDGPU
+      -DLLVM_BUILD_UTILS=OFF
+      -DLLVM_INCLUDE_TESTS=OFF
+      -DLLVM_ENABLE_ASSERTIONS=ON
+      -DLLVM_ENABLE_ZSTD=OFF
+    INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "<BINARY_DIR>/lib/cmake/llvm/LLVMConfig.cmake"
+    USES_TERMINAL_CONFIGURE TRUE
+    USES_TERMINAL_BUILD TRUE)
 
-ExternalProject_Get_Property(amd_codegen_llvm_build BINARY_DIR)
+  ExternalProject_Get_Property(amd_codegen_llvm_build BINARY_DIR)
+  set(_amd_codegen_llvm_dir "${BINARY_DIR}/lib/cmake/llvm")
+  set(_amd_codegen_depends DEPENDS amd_codegen_llvm_build)
+  set(_amd_codegen_cache_args "")
+endif()
 
 # Build the standalone triton_amd_codegen library against the LLVM
 ExternalProject_Add(triton_amd_codegen
-  DEPENDS amd_codegen_llvm_build
+  ${_amd_codegen_depends}
   SOURCE_DIR "${TRITON_PROJECT_DIR}/third_party/amd/backend/codegen"
   PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/codegen"
+  CMAKE_CACHE_ARGS ${_amd_codegen_cache_args}
   CMAKE_ARGS
     ${_amd_codegen_tool_args}
 	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-	"-DLLVM_DIR=${BINARY_DIR}/lib/cmake/llvm"
+	"-DLLVM_DIR=${_amd_codegen_llvm_dir}"
     "-DTRITON_AMD_LLVM_REVISION=${ROCMLIR_AMD_CODEGEN_LLVM_REVISION}"
   INSTALL_COMMAND ""
   BUILD_BYPRODUCTS "<BINARY_DIR>/${triton_amd_codegen_libname}"
