@@ -8,7 +8,7 @@ else()
 endif()
 
 set(TRITON_AMD_DEVICE_LIB_DIR
-  "${TRITON_PROJECT_DIR}/third_party/amd/backend/lib")
+  "${triton_SOURCE_DIR}/third_party/amd/backend/lib")
 set(TRITON_AMD_DEVICE_LIB_NAMES ocml ockl)
 set(TRITON_AMD_DEVICE_LIB_FILES "")
 foreach(_lib IN LISTS TRITON_AMD_DEVICE_LIB_NAMES)
@@ -112,8 +112,8 @@ set(LLD_INCLUDE_CANDIDATES "")
 # at the source tree here: Triton's own CMake runs build_helpers.py and
 # FORCE-overwrites LLVM_INCLUDE_DIRS with the build-tree include dir only,
 # so the LLVM_INCLUDE_DIRS-based derivation below would miss lld/include.
-if(DEFINED LLVM_EXTERNAL_SRC_DIR)
-  list(APPEND LLD_INCLUDE_CANDIDATES "${LLVM_EXTERNAL_SRC_DIR}/lld/include")
+if(DEFINED llvm-project_SOURCE_DIR)
+  list(APPEND LLD_INCLUDE_CANDIDATES "${llvm-project_SOURCE_DIR}/lld/include")
 endif()
 list(GET LLVM_INCLUDE_DIRS 0 LLVM_FIRST_INCLUDE_DIR)
 get_filename_component(LLVM_SRC_DIR "${LLVM_FIRST_INCLUDE_DIR}" DIRECTORY)

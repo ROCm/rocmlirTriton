@@ -260,31 +260,6 @@ if(NOT WIN32)
 endif()
 
 #===----------------------------------------------------------------------===//
-# External dependency paths for RPATH and in-tree LLVM discovery.
-# These must be set BEFORE include(cmake/triton.cmake) because the in-tree
-# LLVM path uses LLVM_EXTERNAL_BUILD_DIR to populate MLIR_INCLUDE_DIRS etc.
-#
-# The *_EXTERNAL_SRC_DIR values are placeholders: cmake/triton.cmake fetches
-# the LLVM/MLIR and Triton sources with FetchContent and overwrites them with
-# the actual fetched source directories.
-#===----------------------------------------------------------------------===//
-
-set(LLVM_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/llvm-project")
-set(LLVM_EXTERNAL_SRC_DIR "")
-set(LLVM_EXTERNAL_BIN_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/bin")
-set(LLVM_EXTERNAL_LIB_DIR "${LLVM_EXTERNAL_BUILD_DIR}/llvm/lib")
-
-set(TRITON_EXTERNAL_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/external/triton")
-set(TRITON_EXTERNAL_SRC_DIR "")
-set(TRITON_EXTERNAL_BIN_DIR "${TRITON_EXTERNAL_BUILD_DIR}/bin")
-set(TRITON_EXTERNAL_LIB_DIR "${TRITON_EXTERNAL_BUILD_DIR}/lib")
-
-message(STATUS "LLVM_EXTERNAL_BIN_DIR: ${LLVM_EXTERNAL_BIN_DIR}")
-message(STATUS "LLVM_EXTERNAL_LIB_DIR: ${LLVM_EXTERNAL_LIB_DIR}")
-message(STATUS "TRITON_EXTERNAL_BIN_DIR: ${TRITON_EXTERNAL_BIN_DIR}")
-message(STATUS "TRITON_EXTERNAL_LIB_DIR: ${TRITON_EXTERNAL_LIB_DIR}")
-
-#===----------------------------------------------------------------------===//
 # Address sanitizer workaround
 #===----------------------------------------------------------------------===//
 
@@ -331,7 +306,7 @@ include(cmake/rocm.cmake)
 
 if(NOT WIN32)
   # Add library paths to RPATH
-  list(PREPEND CMAKE_BUILD_RPATH "${TRITON_EXTERNAL_LIB_DIR}")
+  list(PREPEND CMAKE_BUILD_RPATH "${triton_BINARY_DIR}/lib")
     list(PREPEND CMAKE_BUILD_RPATH "${ROCMLIR_LIB_DIR}")
   # Also add LLVM library dir if available
   if(DEFINED LLVM_LIBRARY_DIR)
