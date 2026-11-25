@@ -132,7 +132,7 @@ if(WIN32)
     #
     # Both are near-redundant: HandleLLVMOptions.cmake sets them for LLVM and,
     # via mlir/CMakeLists.txt, for our own subtree, and Triton sets them for its
-    # targets. What is left over is external/triton/test/lib, which Triton's own
+    # targets. What is left over is ${triton_SOURCE_DIR}/test/lib, which Triton's own
     # flag block does not reach -- those eight TUs get both flags only from here.
     add_compile_options(
       "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
@@ -285,8 +285,8 @@ if(DEFINED ENV{ADDRESS_SANITIZER})
 endif()
 
 #===----------------------------------------------------------------------===//
-# Set up LLVM/MLIR and Triton. Both are vendored under external/ and built
-# in-tree as part of this build (see cmake/triton.cmake).
+# Fetch LLVM/MLIR and Triton sources and build them as part of this build
+# (see cmake/triton.cmake).
 #===----------------------------------------------------------------------===//
 
 if(POLICY CMP0135)

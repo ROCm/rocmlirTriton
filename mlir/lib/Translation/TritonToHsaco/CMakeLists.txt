@@ -106,9 +106,9 @@ target_include_directories(obj.TritonToHsacoTranslation PRIVATE
 # and the install-tree layout (<prefix>/include/lld, used when LLVM is consumed
 # via find_package from an installed package).
 set(LLD_INCLUDE_CANDIDATES "")
-# rocmlirTriton in-tree build: lld is vendored next to llvm/ in
-# external/llvm-project, so its headers live at <src>/lld/include. Prefer
-# this explicit source path. We cannot rely on LLVM_INCLUDE_DIRS[0] pointing
+# rocmlirTriton in-tree build: lld is next to llvm/ in the fetched LLVM
+# source tree, so its headers live at ${llvm-project_SOURCE_DIR}/lld/include.
+# Prefer this explicit source path. We cannot rely on LLVM_INCLUDE_DIRS[0] pointing
 # at the source tree here: Triton's own CMake runs build_helpers.py and
 # FORCE-overwrites LLVM_INCLUDE_DIRS with the build-tree include dir only,
 # so the LLVM_INCLUDE_DIRS-based derivation below would miss lld/include.
