@@ -86,6 +86,46 @@
 // RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,T9
 
+// Case T10. f8E4M3FN x f4E2M1FN, E8M0 x E4M3 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f8E4M3FN_f4E2M1FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T10
+
+// Case T11. f8E5M2 x f4E2M1FN, E8M0 x E4M3 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f8E5M2_f4E2M1FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T11
+
+// Case T12. f4E2M1FN x f8E4M3FN, E4M3 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f4E2M1FN_f8E4M3FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T12
+
+// Case T13. f4E2M1FN x f8E5M2, E4M3 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f4E2M1FN_f8E5M2 -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T13
+
+// Case T14. f4E2M1FN x f4E2M1FN, E4M3 x E4M3 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f4E2M1FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   -scale_a_dtype f8E4M3FN -scale_b_dtype f8E4M3FN \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T14
+
 // CHECK: .amdgcn_target "amdgpu12.50-amd-amdhsa-unknown-gfx1250"
 // CHECK-NOT: v_wmma
 
@@ -121,6 +161,25 @@
 
 // Case T9. GEMM B (BF8) is the instruction's A, and GEMM A (FP4) its B.
 // T9-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_BF8 matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
+
+// E4M3 scales (cases T10 to T14). An E4M3 scale is legal only on an FP4
+// operand, and it moves with that operand through the swap. The disassembler
+// prints the data formats, then any MATRIX_SCALE_ROW1, then the scale formats.
+
+// Case T10. GEMM B (FP4, E4M3 scale) is the instruction's A.
+// T10-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*}} matrix_a_scale_fmt:MATRIX_SCALE_FMT_E4M3{{$}}
+
+// Case T11. As case T10, with GEMM A (BF8, E8M0) as the instruction's B.
+// T11-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4 matrix_b_fmt:MATRIX_FMT_BF8{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*}} matrix_a_scale_fmt:MATRIX_SCALE_FMT_E4M3{{$}}
+
+// Case T12. GEMM A (FP4, E4M3 scale) is the instruction's B.
+// T12-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*}} matrix_b_scale_fmt:MATRIX_SCALE_FMT_E4M3{{$}}
+
+// Case T13. As case T12, with GEMM B (BF8, E8M0) as the instruction's A.
+// T13-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_BF8 matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*}} matrix_b_scale_fmt:MATRIX_SCALE_FMT_E4M3{{$}}
+
+// Case T14. FP4 data and E4M3 scales on both sides.
+// T14-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4 matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*}} matrix_a_scale_fmt:MATRIX_SCALE_FMT_E4M3 matrix_b_scale_fmt:MATRIX_SCALE_FMT_E4M3{{$}}
 
 // CHECK-NOT: v_wmma
 // CHECK: s_endpgm
