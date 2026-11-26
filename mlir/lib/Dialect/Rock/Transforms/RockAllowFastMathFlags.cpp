@@ -38,8 +38,9 @@
 //   * `nnan`     on `arith.{max,min}numf` -> lets a clamp pair fold into
 //                tt.clampf (one v_med3). The NaN-propagating maximumf/minimumf
 //                are deliberately left alone. Not applied when
-//                `-disable-fast-math` is set, since
-//                `rock-allow-fast-math-flags` is skipped entirely.
+//                `-disable-fast-math` or `rock.disable-fast-math` is set, since
+//                this pass is skipped entirely, nor when `rock.disable-nnan`
+//                is set, which drops only this flag.
 
 //===-----------------------------------------------------===//
 
@@ -152,6 +153,13 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   auto func = getOperation();
   if (!func->hasAttr(rock::KernelAttr::getMnemonic()))
     return;
+  // The kernel pipeline omits this pass under `-disable-fast-math`. The same
+  // request arrives as a function attribute from MIGraphX, and rocmlir-opt
+  // runs the pass directly, so honor it here as well.
+  if (func->hasAttr(DisableFastMathAttr::getMnemonic()))
+    return;
+  // Drop only `nnan`. The rest of the flags below stay.
+  const bool disableNnan = func->hasAttr(DisableNnanAttr::getMnemonic());
   MLIRContext *ctx = &getContext();
 
   // x / y -> x * rcp(y) via hardware reciprocal.
@@ -174,7 +182,10 @@ void RockAllowFastMathFlagsPass::runOnOperation() {
   // handling under the kernel path's default no-NaN assumption, which is what
   // lets a clamp pair fold into one v_med3. Only these two: flagging
   // maximumf/minimumf would quietly undo a deliberate choice to propagate.
-  arith::FastMathFlags numMinMaxFlags = nszOnly | arith::FastMathFlags::nnan;
+  // `rock.disable-nnan` keeps the `nsz` peephole and withholds `nnan`.
+  arith::FastMathFlags numMinMaxFlags = nszOnly;
+  if (!disableNnan)
+    numMinMaxFlags = numMinMaxFlags | arith::FastMathFlags::nnan;
   // Hardware approximate transcendentals (v_exp_f32, v_log_f32, ...).
   constexpr arith::FastMathFlags transcendentalFlags =
       arith::FastMathFlags::nsz | arith::FastMathFlags::contract |

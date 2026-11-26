@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Passes.h"
 #include "mlir/Dialect/Rock/utility/KnobUtils.h"
+#include "mlir/Dialect/Rock/utility/compileFlags.h"
 #include "mlir/Dialect/Rock/utility/tritonUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -539,7 +540,9 @@ void RockToTTIRPass::runOnOperation() {
 
   // Consume the tuning tri-state here: once the precision is baked into the
   // emitted dots, the raw policy must not leak into Triton IR.
-  bool useBf16x3ForF32 = resolveUseBf16x3ForF32(funcOp, disableFastMath);
+  bool useBf16x3ForF32 =
+      resolveUseBf16x3ForF32(
+          funcOp, rock::disablesFastMath(funcOp, disableFastMath));
   funcOp->removeAttr(rock::UseBf16x3ForF32Attr::getMnemonic());
 
   ConversionTarget target(*ctx);

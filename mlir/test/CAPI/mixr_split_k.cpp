@@ -342,7 +342,7 @@ static bool constructAndTraverseIr(MlirContext ctx,
 
   // run high level pipeline
   auto pm0 = CRAIIWrapper<MlirPassManager>(mlirPassManagerCreate(ctx));
-  mlirMIGraphXAddHighLevelPipeline(pm0.get());
+  mlirMIGraphXAddHighLevelPipeline(pm0.get(), moduleOp.get());
   MlirLogicalResult status0 = mlirPassManagerRunOnOp(pm0.get(), moduleMO);
   if (mlirLogicalResultIsFailure(status0)) {
     std::cerr << "Highlevel Pipeline failed" << std::endl;
@@ -376,7 +376,7 @@ static bool constructAndTraverseIr(MlirContext ctx,
 
   if (isFusible) {
     auto pm2 = CRAIIWrapper<MlirPassManager>(mlirPassManagerCreate(ctx));
-    mlirMIGraphXAddBackendPipeline(pm2.get(), &backendOpts);
+    mlirMIGraphXAddBackendPipeline(pm2.get(), &backendOpts, moduleOp.get());
     MlirLogicalResult status2 = mlirPassManagerRunOnOp(pm2.get(), moduleMO);
     if (mlirLogicalResultIsFailure(status2)) {
       std::cerr << "Backend Pipeline failed" << '\n';
