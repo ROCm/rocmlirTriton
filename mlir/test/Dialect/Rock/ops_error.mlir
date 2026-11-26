@@ -736,6 +736,65 @@ func.func @gemm_e4m3_scale_f4_mixed_block_16(%a: tensor<64x128xf4E2M1FN>, %b: te
   func.return
 }
 
+// The illegal block-16 pairs not covered above (cases N1 to N5 of the gfx1250
+// block-16 test plan). An f8E4M3FN scale is legal only on an fp4 operand: on
+// both sides of fp4 x fp4, or on the fp4 side of a mixed pair whose fp8 side
+// keeps E8M0. The legal pairs are covered by
+// rocmlir-driver/scaled_wmma16_assembly.mlir.
+
+// Case N1. Mixed f8 x f4 with the E4M3 scale on the f8 side.
+func.func @gemm_e4m3_scale_on_f8_side_of_f8_f4_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N2. The mirror of case N1: mixed f4 x f8, E4M3 scale on the f8 side.
+func.func @gemm_e4m3_scale_on_f8_side_of_f4_f8_block_16(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x8xf8E8M0FNU>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x8xf8E8M0FNU> * tensor<128x32xf8E4M3FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N3. Mixed f8 x f4 with E4M3 scales on both sides: the f8 side must
+// keep E8M0.
+func.func @gemm_e4m3_scale_both_sides_of_f8_f4_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N4. fp4 x fp4 with E4M3 on A and E8M0 on B, the mirror of
+// @gemm_e4m3_scale_f4_mixed_block_16.
+func.func @gemm_e4m3_scale_f4_mixed_a_block_16(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N5. f8 x f8 (fp8 x bf8) with a single E4M3 scale. f8 x f8 accepts only
+// E8M0, on either side.
+func.func @gemm_e4m3_scale_one_side_f8_f8_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf8E5M2>,
+                                  %scaleA: tensor<64x8xf8E8M0FNU>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E8M0FNU> * tensor<128x32xf8E5M2> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
 // kPerBlock in tuning params must be divisible by quantBlockSize
 func.func @gemm_kperblock_not_divisible_by_quantblocksize(
     %a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
