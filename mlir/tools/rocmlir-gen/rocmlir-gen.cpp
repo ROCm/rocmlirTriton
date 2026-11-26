@@ -330,6 +330,11 @@ static llvm::cl::opt<bool> scaledGemm(
     llvm::cl::desc("Indicates whether to generate scaling gemm or not"),
     llvm::cl::value_desc("boolean"), llvm::cl::init(false));
 
+static llvm::cl::opt<bool> float16Accumulation(
+    "float16-accumulation",
+    llvm::cl::desc("Enable 16-bit floating-point accumulation in kernels"),
+    llvm::cl::init(false));
+
 /// gemm+elementwise+gemm options
 static llvm::cl::opt<int64_t>
     gemmO("gemmO", llvm::cl::desc("N dimension of the second gemm()"),
@@ -6983,6 +6988,15 @@ int main(int argc, char **argv) {
     populateCloneHarnessLogic(*module);
   } else if (!hasUserKernel) {
     generateKernel(&context, genParams, *module);
+  }
+
+  if (float16Accumulation) {
+    Builder builder(&context);
+    module->walk([&](func::FuncOp func) {
+      if (func->hasAttr(rock::KernelAttr::getMnemonic()))
+        func->setAttr(rock::Float16AccAttr::getMnemonic(),
+                      builder.getI64IntegerAttr(1));
+    });
   }
 
   if (emitSplitKSelectionLikelihood) {

@@ -2003,7 +2003,7 @@ PY
                                                         sh '''
                                                             export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
                                                             export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                            bash cmake.sh
+                                                            bash cmake.sh -DMLIR_ENABLE_ROCM_RUNNER=OFF
                                                             cd build && ninja librockCompiler
                                                         '''
                                                         sh 'cmake --install build --prefix ${WORKSPACE}/MIGraphXDeps'
@@ -2024,7 +2024,7 @@ PY
                                                     stage("Verify MIGraphX with MLIR") {
                                                         dir('MIGraphX/build') {
                                                             timeout(time: 120, activity: true, unit: 'MINUTES') {
-                                                                withEnv(['MIGRAPHX_MLIR_USE_SPECIFIC_OPS=convolution,fused,dot,attention', 'MIGRAPHX_ENABLE_MLIR_INPUT_FUSION=1', 'MIGRAPHX_ENABLE_MLIR_REDUCE_FUSION=1', 'MIGRAPHX_MLIR_ENABLE_SPLITK=1', 'MIGRAPHX_ENABLE_EXTRA_MLIR=1', 'MIGRAPHX_DISABLE_LAYERNORM_FUSION=1', 'MIGRAPHX_ENABLE_SPLIT_REDUCE=1']) {
+                                                                withEnv(['MIGRAPHX_MLIR_USE_SPECIFIC_OPS=convolution,fused,dot,attention', 'MIGRAPHX_ENABLE_MLIR_INPUT_FUSION=1', 'MIGRAPHX_ENABLE_MLIR_REDUCE_FUSION=1', 'MIGRAPHX_MLIR_ENABLE_SPLITK=1', 'MIGRAPHX_ENABLE_EXTRA_MLIR=1', 'MIGRAPHX_DISABLE_LAYERNORM_FUSION=1', 'MIGRAPHX_ENABLE_SPLIT_REDUCE=1', "LD_LIBRARY_PATH=${WORKSPACE}/MIGraphXDeps/lib"]) {
                                                                     // run test_verify for accuracy and run MLIR related unit-tests
                                                                     sh 'make -j$(nproc) test_verify test_gpu_mlir test_gpu_fuse_mlir'
                                                                     // Verify ResNet50, Bert, Gpt2
@@ -2039,7 +2039,7 @@ PY
                                                         }
                                                         //Accuracy_checker will compare outputs from MIGraphX and onnx runtime
                                                         dir('MIGraphX/tools/accuracy') {
-                                                            withEnv(['MIGRAPHX_MLIR_USE_SPECIFIC_OPS=convolution,fused,dot,attention', 'MIGRAPHX_ENABLE_MLIR_INPUT_FUSION=1', 'MIGRAPHX_ENABLE_MLIR_REDUCE_FUSION=1', 'MIGRAPHX_MLIR_ENABLE_SPLITK=1', 'MIGRAPHX_ENABLE_EXTRA_MLIR=1', 'MIGRAPHX_DISABLE_LAYERNORM_FUSION=1', 'MIGRAPHX_ENABLE_SPLIT_REDUCE=1']) {
+                                                            withEnv(['MIGRAPHX_MLIR_USE_SPECIFIC_OPS=convolution,fused,dot,attention', 'MIGRAPHX_ENABLE_MLIR_INPUT_FUSION=1', 'MIGRAPHX_ENABLE_MLIR_REDUCE_FUSION=1', 'MIGRAPHX_MLIR_ENABLE_SPLITK=1', 'MIGRAPHX_ENABLE_EXTRA_MLIR=1', 'MIGRAPHX_DISABLE_LAYERNORM_FUSION=1', 'MIGRAPHX_ENABLE_SPLIT_REDUCE=1', "LD_LIBRARY_PATH=${WORKSPACE}/MIGraphXDeps/lib"]) {
                                                                 sh 'python3 accuracy_checker.py --onnx /MIGraphXDeps/resnet50-v1-7.onnx'
                                                                 sh 'python3 accuracy_checker.py --fill1 --onnx /MIGraphXDeps/bert_base_cased_1.onnx --input-dim input_ids:1,384'
                                                                 sh 'python3 accuracy_checker.py --fill1 --onnx /MIGraphXDeps/distilgpt2_1.onnx --input-dim input_ids:1,384'
