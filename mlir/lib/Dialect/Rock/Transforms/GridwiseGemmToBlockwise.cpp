@@ -273,7 +273,7 @@ struct GridwiseGemmRewritePattern : public OpRewritePattern<GridwiseGemmOp> {
     // TODO: Move this to a generic place (AmdArchDb)
     if (arch.contains("gfx1250") && (accType == b.getF32Type()) &&
         op->getParentOfType<func::FuncOp>()->hasAttr(
-            "rock.fp16_accumulation") &&
+            rock::Fp16AccumulationAttr::getMnemonic()) &&
         elemTypeOut.getIntOrFloatBitWidth() <= 16) {
       if (elementTypeA.getIntOrFloatBitWidth() == 16 &&
           elementTypeB.getIntOrFloatBitWidth() == 16 &&

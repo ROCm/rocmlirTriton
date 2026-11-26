@@ -617,6 +617,14 @@ def Rock_EnableSplitKForTuning : Rock_Attr<"EnableSplitKForTuning"> {
   }];
 }
 
+def Rock_Fp16Accumulation : Rock_Attr<"Fp16Accumulation"> {
+  let mnemonic = "rock.fp16_accumulation";
+  let description = [{
+    Allows 16-bit accumulation in GEMMs (currently gfx1250 only). If unset,
+    the default accumulator type from getAccType is used.
+  }];
+}
+
 def Rock_InputFusions : Rock_Attr<"InputFusions"> {
   let mnemonic = "rock.input_fusions";
   let description = [{
