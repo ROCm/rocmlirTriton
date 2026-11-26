@@ -7,8 +7,8 @@
 module {
   func.func @tinybert_part_3(%arg0: tensor<2x128x2x64xf32>, %arg1: tensor<1x128x128xf32>, %arg2: tensor<1x1x128xf32>, %arg3: tensor<2x128x128xf32>) -> (tensor<2x128x128xf32>) {
     %_zp = "tosa.const"() <{values = dense<0.0> : tensor<1xf32>}> : () -> tensor<1xf32>
-    %_s0 = "tosa.const_shape"() {values = dense<[1, 256, 128]> : tensor<3xindex>} : () -> !tosa.shape<3>
-    %_s1 = "tosa.const_shape"() {values = dense<[2, 128, 128]> : tensor<3xindex>} : () -> !tosa.shape<3>
+    %_s0 = "tosa.const_shape"() <{values = dense<[1, 256, 128]> : tensor<3xindex>}> : () -> !tosa.shape<3>
+    %_s1 = "tosa.const_shape"() <{values = dense<[2, 128, 128]> : tensor<3xindex>}> : () -> !tosa.shape<3>
     %0 = "tosa.reshape"(%arg0, %_s0) : (tensor<2x128x2x64xf32>, !tosa.shape<3>) -> tensor<1x256x128xf32>
     %1 = "tosa.matmul"(%0, %arg1, %_zp, %_zp) {acc_type = f32} : (tensor<1x256x128xf32>, tensor<1x128x128xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x256x128xf32>
     %2 = "tosa.reshape"(%1, %_s1) : (tensor<1x256x128xf32>, !tosa.shape<3>) -> tensor<2x128x128xf32>

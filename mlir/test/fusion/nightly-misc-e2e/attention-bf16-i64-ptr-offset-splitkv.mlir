@@ -15,7 +15,7 @@
 // (ROCMLIR_DRIVER_E2E_TEST_ENABLED / enable_rock_driver_e2e_test). Arch-independent:
 // uses %arch and lets rocmlir-gen infer the hardware defaults.
 
-// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
+// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=false -with-attn-bias=false -transQ=true -transK=true -transV=false -transO=false -causal=false -return_lse=true -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
 // RUN: | rocm-run \
@@ -29,7 +29,7 @@
 // TransformsToPointerArith must extract that base pointer as i64 and emit the
 // store-offset arithmetic in i64 rather than i32 (which is what used to overflow).
 
-// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=True -transV=False -transO=False -causal=False -return_lse=True -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
+// RUN: rocmlir-gen --arch %arch -operation attention -t bf16 -g 7 -seq_len_q 293 -seq_len_k 32 -num_heads_q 128 -num_heads_kv 8 -head_dim_qk 32 -head_dim_v 256 -with-attn-scale=false -with-attn-bias=false -transQ=true -transK=true -transV=false -transO=false -causal=false -return_lse=true -split_kv=32 --perf_config=attn:v3:32,64,128,1,1,2,16,1,2,1,8,-1,-1,-1,-1,-1 -pv --pv-f64 \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c --mlir-print-ir-after=rock-transforms-to-pointer-arith -o /dev/null 2>&1 \
 // RUN: | FileCheck %s --check-prefix=I64

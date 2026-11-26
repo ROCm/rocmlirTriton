@@ -1836,20 +1836,30 @@ static llvm::SmallVector<float, 3> getTensorInitPattern(Type elemType,
 static LogicalResult populateTensorFillLogic(OpBuilder &b, Location loc,
                                              ArrayRef<float> pattern,
                                              Type elemType, Value toFill) {
-  // TODO(kdrewnia) Refactor this to create the constant vector up front
-  Value constantsVec = rock::createZeroConstantOp(
-      b, loc, VectorType::get(pattern.size(), elemType));
-  for (auto v : llvm::enumerate(pattern)) {
-    Value vOp;
-    if (elemType.isIntOrIndex()) {
-      vOp = rock::createConstantIntOp(b, loc, elemType, elemType,
-                                      static_cast<int64_t>(v.value()));
-    } else {
-      vOp = rock::createConstantFloatOp(b, loc, elemType, elemType, v.value());
+  // Materialize the pattern as a single constant vector
+  auto vecType = VectorType::get(pattern.size(), elemType);
+  Value constantsVec;
+  if (elemType.isIntOrIndex()) {
+    SmallVector<APInt> values;
+    values.reserve(pattern.size());
+    for (float value : pattern)
+      values.emplace_back(elemType.getIntOrFloatBitWidth(),
+                          static_cast<int64_t>(value), /*isSigned=*/true);
+    constantsVec = arith::ConstantOp::create(
+        b, loc, DenseElementsAttr::get(vecType, values));
+  } else {
+    SmallVector<APFloat> values;
+    values.reserve(pattern.size());
+    for (float value : pattern) {
+      auto [apValue, status] = rock::createAPFloat(elemType, value);
+      if (status != APFloat::opOK)
+        return emitError(loc) << "test pattern value " << value
+                              << " is not exactly representable in " << elemType
+                              << "; pick a pattern that the type can hold";
+      values.push_back(apValue);
     }
-    constantsVec =
-        vector::InsertOp::create(b, loc, vOp, constantsVec, v.index())
-            .getResult();
+    constantsVec = arith::ConstantOp::create(
+        b, loc, DenseElementsAttr::get(vecType, values));
   }
 
   Value toFillFlat = makeNDMemRef(b, toFill, 1);
@@ -2120,7 +2130,8 @@ static func::FuncOp getMemcpyFuncDecl(ModuleOp module, const MemRefType srcType,
         } else {
           if (srcBitWidth < dstBitWidth)
             newLoadOp =
-                arith::ExtFOp::create(opBuilder, loc, dstElemType, loadOp);
+                arith::ExtFOp::create(opBuilder, loc, dstElemType, loadOp,
+                                      arith::ExtFOp::Properties{});
           else
             newLoadOp =
                 arith::TruncFOp::create(opBuilder, loc, dstElemType, loadOp);
@@ -2209,8 +2220,9 @@ static Value ensureFloatIsF32(OpBuilder &b, Location loc, Value tensor,
           result = arith::SIToFPOp::create(nestedB, nestedLoc,
                                            nestedB.getF32Type(), args[0]);
         } else {
-          result = arith::ExtFOp::create(nestedB, nestedLoc,
-                                         nestedB.getF32Type(), args[0]);
+          result =
+              arith::ExtFOp::create(nestedB, nestedLoc, nestedB.getF32Type(),
+                                    args[0], arith::ExtFOp::Properties{});
         }
         linalg::YieldOp::create(nestedB, nestedLoc, result);
       });
@@ -5703,8 +5715,8 @@ static func::FuncOp createVerifierFunc(const GenParams &genParams,
             Value valOrig = affine::AffineLoadOp::create(b, loc, valFlat, ivs);
             Value valTruncated =
                 arith::TruncFOp::create(b, loc, testElemType, valOrig);
-            Value valExt =
-                arith::ExtFOp::create(b, loc, valElemType, valTruncated);
+            Value valExt = arith::ExtFOp::create(
+                b, loc, valElemType, valTruncated, arith::ExtFOp::Properties{});
             affine::AffineStoreOp::create(b, loc, valExt, valFlat, ivs);
           });
     }

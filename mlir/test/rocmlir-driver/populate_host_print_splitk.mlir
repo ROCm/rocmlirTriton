@@ -9,12 +9,6 @@
 // CHECK-LABEL: func.func @main()
 // CHECK-NEXT: %[[filter:.*]] = memref.alloc() : memref<[[GKCYX:[0-9]+]]x[[TYPE:[a-zA-Z0-9]+]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
 // CHECK-NEXT: affine.for %[[if:.*]] = 0 to [[GKCYX]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[if]])
 // CHECK-NEXT: vector.extract
@@ -22,12 +16,6 @@
 
 // CHECK: %[[input:.*]] = memref.alloc() : memref<[[NGCHIWI:[0-9]+]]x[[TYPE]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<3x{{.*}}>
 // CHECK-NEXT: affine.for %[[ii:.*]] = 0 to [[NGCHIWI]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[ii]])
 // CHECK-NEXT: vector.extract
@@ -35,8 +23,6 @@
 
 // CHECK: %[[output:.*]] = memref.alloc() : memref<[[NGKHOWO:[0-9]+]]x[[TYPE]]>
 // CHECK-NEXT: arith.constant dense{{.*}} : vector<1x{{.*}}>
-// CHECK-NEXT: arith.constant {{.*}} : f32
-// CHECK-NEXT: vector.insert {{.*}} : {{.*}} into vector<1x{{.*}}>
 // CHECK-NEXT: affine.for %[[io:.*]] = 0 to [[NGKHOWO]]
 // CHECK-NEXT: affine.apply {{.*}}(%[[io]])
 // CHECK-NEXT: vector.extract

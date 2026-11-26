@@ -23,8 +23,8 @@
 //
 // This pass drops the accesses whose predicate it proves false and whose
 // out-of-bounds arm it proves past `numRecords`, both read out of the IR rather
-// than assumed. `soffset` is matched structurally instead, since the hardware
-// checks `voffset + soffset` and no per-value lattice relates two values.
+// than assumed. The hardware checks `voffset + soffset`, and no per-value
+// lattice relates two values, so a non-zero `soffset` is simply declined.
 //
 // Two domains run because Triton's index math needs both: ranges for interval
 // facts, known bits for the `xor`-based LinearLayout facts intervals widen
@@ -881,66 +881,31 @@ getDescriptorBound(Value rsrc, triton::amdgpu::ISAFamily isaFamily,
 
 /// Which of the emitter's two out-of-bounds encodings an access matched, or
 /// none if the hardware is not guaranteed to discard it.
-enum class OobShape { None, PlainSentinel, SplitSoffset };
-
-[[maybe_unused]] static StringRef getShapeName(OobShape shape) {
-  return shape == OobShape::SplitSoffset ? "split-soffset sentinel"
-                                         : "plain sentinel";
-}
+enum class OobShape { None, PlainSentinel };
 
 /// Classifies the offset a masked-off lane presents. The hardware discards it
 /// when `voffset + soffset` reaches `numRecords` without wrapping, since a
 /// wrapped sum lands back at the start of the buffer.
 ///
-/// A zero `soffset` leaves nothing to wrap, so the bound on `voffset` is
-/// enough. Otherwise the two must be related, and the only relation the emitter
-/// builds is the pair it creates when lifting a uniform part of the offset out:
-///
-///   %c      = llvm.icmp "sge" %x, 0
-///   soffset = llvm.select %c, %x, 0
-///   voffset = llvm.select %c, llvm.sub(-1, %x), %fallback
-///
-/// Under `%c` the sum is exactly all-ones rather than a wrap; otherwise
-/// `soffset` is zero and `%fallback` is judged on its own.
+/// Only a zero `soffset` is handled: it leaves nothing to wrap, so the bound on
+/// `voffset` alone decides. Relating a non-zero `soffset` to `voffset` would
+/// need a relational domain this pass does not have, and nothing asks it to:
+/// Triton's buffer-op emitter masks a lane to a bare -1, which is out of bounds
+/// for any 32-bit `numRecords` whatever the soffset adds (see
+/// `BufferEmitter::fillCommonArgs`). It used to lift a uniform part of the
+/// offset into the soffset SGPR and emit a correlated `icmp sge`/`select` pair
+/// instead; that scheme, and the `annotate-buffer-op-split-safety` pass behind
+/// it, are gone upstream.
 static OobShape classifyOobOffset(Value voffset, Value soffset,
                                   const APInt &numRecords,
                                   PredicateOracle &oracle) {
   std::optional<APInt> soffsetMax = oracle.getUnsignedMax(soffset);
-  if (soffsetMax && soffsetMax->isZero()) {
-    std::optional<APInt> offsetMin = oracle.getUnsignedMin(voffset);
-    if (offsetMin && ugeAtCommonWidth(*offsetMin, numRecords))
-      return OobShape::PlainSentinel;
+  if (!soffsetMax || !soffsetMax->isZero())
     return OobShape::None;
-  }
-
-  auto offsetSelect = voffset.getDefiningOp<LLVM::SelectOp>();
-  auto soffsetSelect = soffset.getDefiningOp<LLVM::SelectOp>();
-  if (!offsetSelect || !soffsetSelect ||
-      offsetSelect.getCondition() != soffsetSelect.getCondition())
-    return OobShape::None;
-
-  Value lifted = soffsetSelect.getTrueValue();
-  auto negated = offsetSelect.getTrueValue().getDefiningOp<LLVM::SubOp>();
-  if (!negated || !isIntConstant(negated.getLhs(), -1) ||
-      negated.getRhs() != lifted)
-    return OobShape::None;
-
-  // The shared condition bounds `%x`, and so bounds `-1 - %x` from below.
-  // Without it a large `%x` would leave `voffset` inside the buffer.
-  auto nonNegative = offsetSelect.getCondition().getDefiningOp<LLVM::ICmpOp>();
-  if (!nonNegative || nonNegative.getPredicate() != LLVM::ICmpPredicate::sge ||
-      nonNegative.getLhs() != lifted || !isIntConstant(nonNegative.getRhs(), 0))
-    return OobShape::None;
-
-  unsigned width = voffset.getType().getIntOrFloatBitWidth();
-  if (!ugeAtCommonWidth(APInt::getSignedMinValue(width), numRecords))
-    return OobShape::None;
-
-  if (classifyOobOffset(offsetSelect.getFalseValue(),
-                        soffsetSelect.getFalseValue(), numRecords,
-                        oracle) == OobShape::None)
-    return OobShape::None;
-  return OobShape::SplitSoffset;
+  std::optional<APInt> offsetMin = oracle.getUnsignedMin(voffset);
+  if (offsetMin && ugeAtCommonWidth(*offsetMin, numRecords))
+    return OobShape::PlainSentinel;
+  return OobShape::None;
 }
 
 /// The descriptor, offsets and cache policy a buffer access presents to the
@@ -1100,48 +1065,44 @@ void RockFoldOobBufferOpsPass::runOnOperation() {
     return;
   }
 
-  SmallVector<std::pair<ROCDL::RawPtrBufferStoreOp, OobShape>> deadStores;
-  SmallVector<std::pair<ROCDL::RawPtrBufferLoadOp, OobShape>> deadLoads;
-  SmallVector<std::pair<Operation *, OobShape>> deadAtomics;
+  SmallVector<ROCDL::RawPtrBufferStoreOp> deadStores;
+  SmallVector<ROCDL::RawPtrBufferLoadOp> deadLoads;
+  SmallVector<Operation *> deadAtomics;
 
   PredicateOracle oracle;
   if (failed(oracle.run(func)))
     return signalPassFailure();
 
   for (auto [store, access] : candidateStores) {
-    OobShape shape = classifyAccess(access, isaFamily, oracle);
-    if (shape != OobShape::None)
-      deadStores.emplace_back(store, shape);
+    if (classifyAccess(access, isaFamily, oracle) != OobShape::None)
+      deadStores.push_back(store);
   }
   for (auto [load, access] : candidateLoads) {
-    OobShape shape = classifyAccess(access, isaFamily, oracle);
-    if (shape != OobShape::None)
-      deadLoads.emplace_back(load, shape);
+    if (classifyAccess(access, isaFamily, oracle) != OobShape::None)
+      deadLoads.push_back(load);
   }
   for (auto [atomic, access] : candidateAtomics) {
-    OobShape shape = classifyAccess(access, isaFamily, oracle);
-    if (shape != OobShape::None)
-      deadAtomics.emplace_back(atomic, shape);
+    if (classifyAccess(access, isaFamily, oracle) != OobShape::None)
+      deadAtomics.push_back(atomic);
   }
 
-  for (auto [store, shape] : deadStores) {
-    LLVM_DEBUG(llvm::dbgs() << "Erasing " << getShapeName(shape) << " store "
-                            << *store << "\n");
+  for (ROCDL::RawPtrBufferStoreOp store : deadStores) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Erasing out-of-bounds store " << *store << "\n");
     store.erase();
   }
   numErasedStores += deadStores.size();
 
-  for (auto [atomic, shape] : deadAtomics) {
-    LLVM_DEBUG(llvm::dbgs() << "Erasing " << getShapeName(shape) << " atomic "
-                            << *atomic << "\n");
+  for (Operation *atomic : deadAtomics) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Erasing out-of-bounds atomic " << *atomic << "\n");
     atomic->erase();
   }
   numErasedAtomics += deadAtomics.size();
 
   OpBuilder builder(&getContext());
-  for (auto [load, shape] : deadLoads) {
-    LLVM_DEBUG(llvm::dbgs() << "Zeroing " << getShapeName(shape) << " load "
-                            << *load << "\n");
+  for (ROCDL::RawPtrBufferLoadOp load : deadLoads) {
+    LLVM_DEBUG(llvm::dbgs() << "Zeroing out-of-bounds load " << *load << "\n");
     builder.setInsertionPoint(load);
     // A discarded raw buffer load reads as zero.
     Value zero =

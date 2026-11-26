@@ -1,7 +1,7 @@
 // Copyright Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// RUN: rocmlir-gen -operation attention -t f32 --arch %arch -g 1 -seq_len_q 348 -seq_len_k 122 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 251 -head_dim_v 4 -with-attn-scale=False -with-attn-bias=True -transQ=True -transK=False -transV=True -transO=False -causal=False -return_lse=False -split_kv=1 --perf_config=attn:v1:64,32,32,2,1,4,0,1,1,0,0 -pv \
+// RUN: rocmlir-gen -operation attention -t f32 --arch %arch -g 1 -seq_len_q 348 -seq_len_k 122 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 251 -head_dim_v 4 -with-attn-scale=false -with-attn-bias=true -transQ=true -transK=false -transV=true -transO=false -causal=false -return_lse=false -split_kv=1 --perf_config=attn:v1:64,32,32,2,1,4,0,1,1,0,0 -pv \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c --mlir-print-ir-after=tritonamdgpu-accelerate-matmul -o /dev/null 2>&1 \
 // RUN: | FileCheck %s --check-prefix=IR
@@ -11,14 +11,14 @@
 // IR: tensor<64x32xf32, #ttg.dot_op<{opIdx = 0, parent = #[[ASYM_MFMA]], kWidth = 1}>>
 // IR: tensor<32x4xf32, #ttg.dot_op<{opIdx = 1, parent = #[[ASYM_MFMA]], kWidth = 1}>>
 
-// RUN: rocmlir-gen -operation attention -t f32 --arch %arch -g 1 -seq_len_q 348 -seq_len_k 122 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 251 -head_dim_v 4 -with-attn-scale=False -with-attn-bias=True -transQ=True -transK=False -transV=True -transO=False -causal=False -return_lse=False -split_kv=1 --perf_config=attn:v1:64,32,32,2,1,4,0,1,1,0,0 -pv \
+// RUN: rocmlir-gen -operation attention -t f32 --arch %arch -g 1 -seq_len_q 348 -seq_len_k 122 -num_heads_q 16 -num_heads_kv 4 -head_dim_qk 251 -head_dim_v 4 -with-attn-scale=false -with-attn-bias=true -transQ=true -transK=false -transV=true -transO=false -causal=false -return_lse=false -split_kv=1 --perf_config=attn:v1:64,32,32,2,1,4,0,1,1,0,0 -pv \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
 // RUN: | rocm-run \
 // RUN: | FileCheck %s
 // CHECK: [1 1 1]
 
-// RUN: rocmlir-gen -operation attention -t f16 --arch %arch -g 1 -seq_len_q 1158 -seq_len_k 68 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 176 -head_dim_v 88 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=False -transV=False -transO=False -causal=True -return_lse=False -split_kv=1 --perf_config=attn:v1:64,256,16,2,1,4,16,1,1,0,1 -pv -pr -pvr \
+// RUN: rocmlir-gen -operation attention -t f16 --arch %arch -g 1 -seq_len_q 1158 -seq_len_k 68 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 176 -head_dim_v 88 -with-attn-scale=false -with-attn-bias=false -transQ=true -transK=false -transV=false -transO=false -causal=true -return_lse=false -split_kv=1 --perf_config=attn:v1:64,256,16,2,1,4,16,1,1,0,1 -pv -pr -pvr \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c --mlir-print-ir-after=tritonamdgpu-accelerate-matmul -o /dev/null 2>&1 \
 // RUN: | FileCheck %s --check-prefix=KPACK
@@ -28,7 +28,7 @@
 // KPACK: tensor<64x16xf16, #ttg.dot_op<{opIdx = 0, parent = #[[MFMA]], kWidth = 4}>>
 // KPACK: tensor<16x256xf16, #ttg.dot_op<{opIdx = 1, parent = #[[MFMA]], kWidth = 4}>>
 
-// RUN: rocmlir-gen -operation attention -t f16 --arch %arch -g 1 -seq_len_q 1158 -seq_len_k 68 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 176 -head_dim_v 88 -with-attn-scale=False -with-attn-bias=False -transQ=True -transK=False -transV=False -transO=False -causal=True -return_lse=False -split_kv=1 --perf_config=attn:v1:64,256,16,2,1,4,16,1,1,0,1 -pv -pr -pvr \
+// RUN: rocmlir-gen -operation attention -t f16 --arch %arch -g 1 -seq_len_q 1158 -seq_len_k 68 -num_heads_q 1 -num_heads_kv 1 -head_dim_qk 176 -head_dim_v 88 -with-attn-scale=false -with-attn-bias=false -transQ=true -transK=false -transV=false -transO=false -causal=true -return_lse=false -split_kv=1 --perf_config=attn:v1:64,256,16,2,1,4,16,1,1,0,1 -pv -pr -pvr \
 // RUN: | rocmlir-driver --host-pipeline=highlevel \
 // RUN: | rocmlir-driver -c \
 // RUN: | rocm-run \

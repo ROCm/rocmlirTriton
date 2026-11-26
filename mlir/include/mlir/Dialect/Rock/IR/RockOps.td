@@ -173,7 +173,7 @@ def Rock_ReduceOp
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $reduceMethod $in attr-dict `:` type($in) `->` type($result)
+    enum($reduceMethod) $in attr-dict `:` type($in) `->` type($result)
   }];
 }
 
@@ -511,7 +511,7 @@ def Rock_StoreOp
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $source `to` $dest (`alias` $resultAlias^)? `by` $storeMethod
+    $source `to` $dest (`alias` $resultAlias^)? `by` enum($storeMethod)
     attr-dict `:` type($source) `->` type($result) `to` type($dest)
     (`alias` type($resultAlias)^)?
   }];
@@ -794,7 +794,7 @@ def Rock_BlockwiseStoreOp
 
   let assemblyFormat = [{
     attr-dict $source  `->` $dest (`alias` $resultAlias^)?
-    (`[` $extraIndices^ `]`)? `by` $storeMethod
+    (`[` $extraIndices^ `]`)? `by` enum($storeMethod)
     `:` type($source) `->` type($dest) (`alias` type($resultAlias)^)?
     `->` type($result)
   }];
@@ -822,7 +822,7 @@ def Rock_BlockwiseStorePtrOp
   }];
 
   let assemblyFormat = [{
-    attr-dict $source  `->` $pointerTensor `(` $maskTensor `)` `by` $storeMethod
+    attr-dict $source  `->` $pointerTensor `(` $maskTensor `)` `by` enum($storeMethod)
     `:` type($source) `->` type($pointerTensor) `(` type($maskTensor) `)`
   }];
   let hasVerifier = 1;
@@ -865,7 +865,7 @@ def Rock_BlockwiseReduceOp
   }];
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $reduceMethod $input attr-dict `:` type($input) `->` type($result)
+    enum($reduceMethod) $input attr-dict `:` type($input) `->` type($result)
   }];
 }
 

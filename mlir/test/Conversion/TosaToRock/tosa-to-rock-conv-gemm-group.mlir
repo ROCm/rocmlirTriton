@@ -12,12 +12,12 @@
 // CHECK-NOT: rock.conv_elementwise_gemm
 func.func @conv_gemm_grouped(%arg0: tensor<131072xf32>, %arg1: tensor<18432xf32>, %arg2: tensor<1024xf32>) -> tensor<32768xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2]] output_shape [1, 16, 64] : tensor<1024xf32> into tensor<1x16x64xf32>
-  %0 = tosa.transpose %expanded {perms = array<i32: 0, 2, 1>} : (tensor<1x16x64xf32>) -> tensor<1x64x16xf32>
+  %0 = tosa.transpose %expanded perms([0, 2, 1]) : (tensor<1x16x64xf32>) -> tensor<1x64x16xf32>
   %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [64, 3, 3, 32] : tensor<18432xf32> into tensor<64x3x3x32xf32>
   %expanded_1 = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [2, 32, 32, 64] : tensor<131072xf32> into tensor<2x32x32x64xf32>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %2 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<64xf32>}> : () -> tensor<64xf32>
-  %3 = tosa.conv2d %expanded_1, %expanded_0, %2, %1, %1 {acc_type = f32, dilation = array<i64: 1, 1>, group = 2 : i64, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<2x32x32x64xf32>, tensor<64x3x3x32xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x64xf32>
+  %3 = tosa.conv2d %expanded_1, %expanded_0, %2, %1, %1 pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) {group = 2 : i64} : (tensor<2x32x32x64xf32>, tensor<64x3x3x32xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x64xf32>
   %collapsed = tensor.collapse_shape %3 [[0, 1, 2], [3]] : tensor<2x32x32x64xf32> into tensor<2048x64xf32>
   %expanded_2 = tensor.expand_shape %collapsed [[0, 1], [2]] output_shape [1, 2048, 64] : tensor<2048x64xf32> into tensor<1x2048x64xf32>
   // expected-error @+1 {{'tosa.matmul' op fusing a grouped convolution into conv+gemm is not supported}}
@@ -33,12 +33,12 @@ func.func @conv_gemm_grouped(%arg0: tensor<131072xf32>, %arg1: tensor<18432xf32>
 // CHECK: rock.conv_elementwise_gemm
 func.func @conv_gemm_ungrouped(%arg0: tensor<131072xf32>, %arg1: tensor<36864xf32>, %arg2: tensor<1024xf32>) -> tensor<32768xf32> attributes {rock.kernel, rock.arch = "##TOKEN_ARCH##"} {
   %expanded = tensor.expand_shape %arg2 [[0, 1, 2]] output_shape [1, 16, 64] : tensor<1024xf32> into tensor<1x16x64xf32>
-  %0 = tosa.transpose %expanded {perms = array<i32: 0, 2, 1>} : (tensor<1x16x64xf32>) -> tensor<1x64x16xf32>
+  %0 = tosa.transpose %expanded perms([0, 2, 1]) : (tensor<1x16x64xf32>) -> tensor<1x64x16xf32>
   %expanded_0 = tensor.expand_shape %arg1 [[0, 1, 2, 3]] output_shape [64, 3, 3, 64] : tensor<36864xf32> into tensor<64x3x3x64xf32>
   %expanded_1 = tensor.expand_shape %arg0 [[0, 1, 2, 3]] output_shape [2, 32, 32, 64] : tensor<131072xf32> into tensor<2x32x32x64xf32>
   %1 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<1xf32>}> : () -> tensor<1xf32>
   %2 = "tosa.const"() <{values = dense<0.000000e+00> : tensor<64xf32>}> : () -> tensor<64xf32>
-  %3 = tosa.conv2d %expanded_1, %expanded_0, %2, %1, %1 {acc_type = f32, dilation = array<i64: 1, 1>, group = 1 : i64, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<2x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x64xf32>
+  %3 = tosa.conv2d %expanded_1, %expanded_0, %2, %1, %1 pad([1, 1, 1, 1]) stride([1, 1]) dilation([1, 1]) acc_type(f32) {group = 1 : i64} : (tensor<2x32x32x64xf32>, tensor<64x3x3x64xf32>, tensor<64xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<2x32x32x64xf32>
   %collapsed = tensor.collapse_shape %3 [[0, 1, 2], [3]] : tensor<2x32x32x64xf32> into tensor<2048x64xf32>
   %expanded_2 = tensor.expand_shape %collapsed [[0, 1], [2]] output_shape [1, 2048, 64] : tensor<2048x64xf32> into tensor<1x2048x64xf32>
   %4 = tosa.matmul %expanded_2, %0, %1, %1 {acc_type = f32} : (tensor<1x2048x64xf32>, tensor<1x64x16xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<1x2048x16xf32>
