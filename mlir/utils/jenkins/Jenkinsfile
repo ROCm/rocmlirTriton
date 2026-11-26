@@ -2003,7 +2003,7 @@ PY
                                                         sh '''
                                                             export CXX_COMPILER=/opt/rocm/llvm/bin/clang++
                                                             export C_COMPILER=/opt/rocm/llvm/bin/clang
-                                                            bash cmake.sh
+                                                            bash cmake.sh -DMLIR_ENABLE_ROCM_RUNNER=OFF
                                                             cd build && ninja librockCompiler
                                                         '''
                                                         sh 'cmake --install build --prefix ${WORKSPACE}/MIGraphXDeps'
