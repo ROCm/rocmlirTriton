@@ -58,6 +58,34 @@
 // RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,T5
 
+// Case T6. f8E4M3FN x f4E2M1FN, E8M0 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f8E4M3FN_f4E2M1FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T6
+
+// Case T7. f4E2M1FN x f8E4M3FN, E8M0 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f4E2M1FN_f8E4M3FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T7
+
+// Case T8. f8E5M2 x f4E2M1FN, E8M0 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f8E5M2_f4E2M1FN -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T8
+
+// Case T9. f4E2M1FN x f8E5M2, E8M0 x E8M0 scales.
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f4E2M1FN_f8E5M2 -m 64 -n 64 -k 128 \
+// RUN:   -out_dtype f32 --scaledGemm -quantBlockSize 16 -transB=true \
+// RUN:   --perf_config "gemm:v1:64,64,128,1,1,4,16,1,2,0,0" \
+// RUN:   | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver --kernel-pipeline=full -o /dev/null 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,T9
+
 // CHECK: .amdgcn_target "amdgpu12.50-amd-amdhsa-unknown-gfx1250"
 // CHECK-NOT: v_wmma
 
@@ -77,6 +105,22 @@
 
 // Case T5. FP4 data on both sides; E8M0 scales stay default.
 // T5-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4 matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
+
+// Mixed FP8 / FP4 (cases T6 to T9). The FP4 side uses half the data registers
+// of the FP8 side (16x128 FP4 is 8 VGPRs, FP8 is 16), and the operand swap
+// decides which matrix_*_fmt carries FP4.
+
+// Case T6. The GEMM's B is FP4, so the instruction's A is FP4.
+// T6-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
+
+// Case T7. The GEMM's A is FP4, so the instruction's B is FP4.
+// T7-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
+
+// Case T8. GEMM B (FP4) is the instruction's A, and GEMM A (BF8) its B.
+// T8-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_FP4 matrix_b_fmt:MATRIX_FMT_BF8{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
+
+// Case T9. GEMM B (BF8) is the instruction's A, and GEMM A (FP4) its B.
+// T9-COUNT-4: v_wmma_scale16_f32_16x16x128_f8f6f4 {{.*}}, 0, v[{{[0-9]+:[0-9]+}}], v[{{[0-9]+:[0-9]+}}] matrix_a_fmt:MATRIX_FMT_BF8 matrix_b_fmt:MATRIX_FMT_FP4{{( matrix_[ab]_scale:MATRIX_SCALE_ROW1)*$}}
 
 // CHECK-NOT: v_wmma
 // CHECK: s_endpgm
