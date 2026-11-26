@@ -34,3 +34,43 @@ config = "-t f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 
 
 [[suite.test]]
 config = "-t f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T2. f8E5M2 x f8E5M2, E8M0 x E8M0 scales.
+[[suite]]
+name = "t2"
+
+[[suite.test]]
+config = "-t f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T3. f8E4M3FN x f8E5M2, E8M0 x E8M0 scales.
+[[suite]]
+name = "t3"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T4. f8E5M2 x f8E4M3FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t4"
+
+[[suite.test]]
+config = "-t f8E5M2_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T5. f4E2M1FN x f4E2M1FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t5"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
