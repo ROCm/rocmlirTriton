@@ -8,6 +8,7 @@
 // RUN: rocmlir-gen --arch gfx1100 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
 // RUN: rocmlir-gen --arch gfx1200 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
 // RUN: rocmlir-gen --arch gfx1250 --operation gemm -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx1250 --operation gemm -t bf16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250_BF16
 
 // Attention: the f16 output is likewise produced by truncating an f32 result.
 // RUN: rocmlir-gen --arch gfx942  --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX942 --implicit-check-not=v_cvt_pk_f16_f32
@@ -15,6 +16,7 @@
 // RUN: rocmlir-gen --arch gfx1100 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1100 --implicit-check-not=v_cvt_pk_f16_f32
 // RUN: rocmlir-gen --arch gfx1200 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1200 --implicit-check-not=v_cvt_pk_f16_f32
 // RUN: rocmlir-gen --arch gfx1250 --operation attention -t f16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250 --implicit-check-not=v_cvt_f16_f32
+// RUN: rocmlir-gen --arch gfx1250 --operation attention -t bf16 -p | env AMDGCN_ENABLE_DUMP=1 rocmlir-driver -c 2>&1 | FileCheck %s --check-prefix=GFX1250_BF16
 
 // A packed f16 GEMM/attention accumulates in f32 and truncates the result to
 // f16 for the output. Only targets with the `cvt-pk-f16-f32-inst` subtarget
@@ -22,10 +24,11 @@
 // convert; every other target truncates one element at a time with the scalar
 // `v_cvt_f16_f32` form.
 
-// GFX90A:{{.*}}v_cvt_f16_f32
-// GFX942:{{.*}}v_cvt_f16_f32
-// GFX1100:{{.*}}v_cvt_f16_f32
-// GFX1200:{{.*}}v_cvt_f16_f32
+// GFX90A: v_cvt_f16_f32
+// GFX942: v_cvt_f16_f32
+// GFX1100: v_cvt_f16_f32
+// GFX1200: v_cvt_f16_f32
 
-// GFX950:{{.*}}v_cvt_pk_f16_f32
-// GFX1250:{{.*}}v_cvt_pk_f16_f32
+// GFX950: v_cvt_pk_f16_f32
+// GFX1250: v_cvt_pk_f16_f32
+// GFX1250_BF16: v_cvt_pk_bf16_f32

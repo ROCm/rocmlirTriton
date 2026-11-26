@@ -1,2 +1,11 @@
-@PACKAGE_INIT@
-include("@PACKAGE_LIB_CMAKE_DIR@/@PACKAGE_NAME@Targets.cmake")
+# Included (raw, after @PACKAGE_INIT@ has already run) from the generated
+# rocmlir-config.cmake via rocm_export_targets()'s INCLUDE parameter -- see
+# export_target() in mlir/tools/rocmlir-lib/CMakeLists.txt. PACKAGE_PREFIX_DIR
+# is defined by that point; configure_file(@ONLY) substitutes the @...@
+# tokens below at build-configure time, before this file is installed.
+#
+# triton_amd_codegen is dlopen-ed at runtime rather than linked, so expose its
+# installed location (the directory and the full path) to consumers.
+set(@PACKAGE_NAME@_TRITON_AMD_CODEGEN_DIR "${PACKAGE_PREFIX_DIR}/@TRITON_AMD_CODEGEN_INSTALL_DIR@")
+set(@PACKAGE_NAME@_TRITON_AMD_CODEGEN_LIBRARY
+    "${@PACKAGE_NAME@_TRITON_AMD_CODEGEN_DIR}/@TRITON_AMD_CODEGEN_LIBNAME@")
