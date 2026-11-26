@@ -12,7 +12,7 @@ module {
 // CLONE: [1 1 1]
 // CLONE-NEXT: Unranked Memref base
   func.func @test_fusion(%arg0: tensor<64x8xf32>, %arg1: tensor<8x64xf32>) -> tensor<8x64xf32> attributes {rock.kernel, rock.nongemm, rock.arch = "##TOKEN_ARCH##"} {
-    %t = tosa.transpose %arg0 {perms = array<i32: 1, 0>} : (tensor<64x8xf32>) -> tensor<8x64xf32>
+    %t = tosa.transpose %arg0 perms([1, 0]) : (tensor<64x8xf32>) -> tensor<8x64xf32>
     %0 = tosa.add %t, %arg1 : (tensor<8x64xf32>, tensor<8x64xf32>) -> tensor<8x64xf32>
     %1 = tosa.tanh %0 : (tensor<8x64xf32>) -> tensor<8x64xf32>
     return %1 : tensor<8x64xf32>
