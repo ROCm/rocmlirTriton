@@ -471,10 +471,9 @@ endif()
 
 foreach(_var
 	CMAKE_C_COMPILER CMAKE_CXX_COMPILER
-    CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER
-    LLVM_DISABLE_ASSEMBLY_FILES LLVM_ENABLE_DIA_SDK)
+    CMAKE_C_COMPILER_LAUNCHER CMAKE_CXX_COMPILER_LAUNCHER)
   if(DEFINED ${_var})
-    list(APPEND _amd_codegen_tool_args "-D${_var}=${${_var}}")
+    list(APPEND _amd_codegen_build_args "-D${_var}=${${_var}}")
   endif()
 endforeach()
 set(triton_amd_codegen_libname "${CMAKE_SHARED_LIBRARY_PREFIX}triton_amd_codegen${CMAKE_SHARED_LIBRARY_SUFFIX}")
@@ -484,13 +483,15 @@ ExternalProject_Add(amd_codegen_llvm_build
   PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/llvm"
   SOURCE_SUBDIR llvm
   CMAKE_ARGS
-    ${_amd_codegen_tool_args}
+    ${_amd_codegen_build_args}
 	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
     -DLLVM_ENABLE_PROJECTS=
     -DLLVM_TARGETS_TO_BUILD=AMDGPU
     -DLLVM_BUILD_UTILS=OFF
     -DLLVM_INCLUDE_TESTS=OFF
     -DLLVM_ENABLE_ASSERTIONS=${LLVM_ENABLE_ASSERTIONS}
+    -DLLVM_DISABLE_ASSEMBLY_FILES=${LLVM_DISABLE_ASSEMBLY_FILES}
+    -DLLVM_ENABLE_DIA_SDK=${LLVM_ENABLE_DIA_SDK}
     -DLLVM_ENABLE_ZSTD=OFF
   INSTALL_COMMAND ""
   BUILD_BYPRODUCTS "<BINARY_DIR>/lib/cmake/llvm/LLVMConfig.cmake"
@@ -505,7 +506,7 @@ ExternalProject_Add(triton_amd_codegen
   SOURCE_DIR "${triton_SOURCE_DIR}/third_party/amd/backend/codegen"
   PREFIX "${CMAKE_CURRENT_BINARY_DIR}/amd-codegen/codegen"
   CMAKE_ARGS
-    ${_amd_codegen_tool_args}
+    ${_amd_codegen_build_args}
 	"-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
 	"-DLLVM_DIR=${BINARY_DIR}/lib/cmake/llvm"
     "-DTRITON_AMD_LLVM_REVISION=${ROCMLIR_AMD_CODEGEN_LLVM_REVISION}"
