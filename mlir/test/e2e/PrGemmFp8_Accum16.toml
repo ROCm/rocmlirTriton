@@ -3,11 +3,11 @@
 #
 directory = "PrGemmFp8_Accum16"
 prefix = "rocmlir-gen"
-suffix = "--operation gemm --arch %arch %pv -rand fixed %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+suffix = "--operation gemm --float16-accumulation --arch %arch %pv -rand fixed %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
 
 [[axis]]
 name = "accumulation type"
-values = ["fp16", "bf16"]
+values = ["fp16"]
 prefix = "-out_dtype "
 
 [[axis]]

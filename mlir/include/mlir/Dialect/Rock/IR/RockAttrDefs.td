@@ -801,6 +801,14 @@ def Rock_CpuFusedConv : Rock_Attr<"CpuFusedConv"> {
   }];
 }
 
+def Rock_Float16Acc : Rock_Attr<"Float16Acc"> {
+  let mnemonic = "rock.float16_accumulation";
+  let description = [{
+    Marker attribute set on gemm op to indicate gemm accumulation can be done
+    in 16-bit float (bf16 or fp16) instead of 32-bit float.
+  }];
+}
+
 def Rock_NotApplicable : Rock_Attr<"NotApplicable"> {
   let mnemonic = "rock.not_applicable";
   let description = [{

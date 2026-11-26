@@ -76,6 +76,7 @@ LogicalResult AffixTuningParameters::validateRockAttributes(func::FuncOp func) {
       UseOptimizeEpilogueAttr::getMnemonic(),
       GridSizeAttr::getMnemonic(),
       CpuVerifierAttr::getMnemonic(),
+      Float16AccAttr::getMnemonic(),
   };
   static const llvm::StringSet<> knownArgRockAttrs = {
       PrefillAttr::getMnemonic(),
