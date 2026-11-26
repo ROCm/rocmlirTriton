@@ -25,13 +25,10 @@ bool mlir::rock::hasReduce(func::FuncOp funcOp) {
       .wasInterrupted();
 }
 
-NonGemmParamsAttr mlir::rock::chooseNonGemmParams(MLIRContext *ctx,
-                                                  Type elemType,
-                                                  bool hasReduce,
-                                                  int64_t numRows,
-                                                  int64_t numCols,
-                                                  int64_t waveSize,
-                                                  int64_t maxTileCols) {
+NonGemmParamsAttr
+mlir::rock::chooseNonGemmParams(MLIRContext *ctx, Type elemType, bool hasReduce,
+                                int64_t numRows, int64_t numCols,
+                                int64_t waveSize, int64_t maxTileCols) {
   // The widest load a lane can issue is 128 bits. Expressed in elements, this
   // is how many of them a thread wants to hold for the load to be a single
   // `dwordx4` rather than a string of narrower ones.

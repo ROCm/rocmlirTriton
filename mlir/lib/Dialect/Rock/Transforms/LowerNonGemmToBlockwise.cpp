@@ -212,8 +212,8 @@ static Value flattenAndPad(OpBuilder &b, Location loc, Value v,
 /// The view from a workgroup's tile coordinates to the padded flat space of a
 /// map kernel. There is no loop here: a map's chunks are independent, so the
 /// chunk index is the workgroup id itself.
-static ArrayAttr buildFlatTileView(OpBuilder &b, Location loc,
-                                   int64_t gridSize, int64_t tileSize) {
+static ArrayAttr buildFlatTileView(OpBuilder &b, Location loc, int64_t gridSize,
+                                   int64_t tileSize) {
   TopDownTMBuilder builder(b, {"bid", "tile_elem"}, {gridSize, tileSize}, loc);
   builder.unmerge("elem", 0, {"bid", "tile_elem"}, {gridSize, tileSize});
   return b.getArrayAttr({builder.get()});
@@ -413,8 +413,9 @@ static LogicalResult checkViewIsRowMajorReshape(TransformOp view,
     }
   }
 
-  llvm::sort(byUpperDim,
-             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+  llvm::sort(byUpperDim, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
 
   uint32_t expected = 0;
   for (auto &[upperDim, lowerDims] : byUpperDim) {
@@ -559,10 +560,8 @@ FailureOr<NonGemmParamsAttr> RockLowerNonGemmToBlockwisePass::resolveParams(
   return params;
 }
 
-LogicalResult
-RockLowerNonGemmToBlockwisePass::lowerReduce(func::FuncOp func,
-                                             ReduceOp reduceOp,
-                                             StoreOp expectedStore) {
+LogicalResult RockLowerNonGemmToBlockwisePass::lowerReduce(
+    func::FuncOp func, ReduceOp reduceOp, StoreOp expectedStore) {
   if (reduceOp.getReduceMethod() != ReduceMethod::Sum)
     return reduceOp.emitError(
         "only sum reductions are supported by the nongemm pipeline");
@@ -813,9 +812,8 @@ LogicalResult RockLowerNonGemmToBlockwisePass::lowerMap(func::FuncOp func,
   b.setInsertionPoint(storeOp);
   auto paddedResultType =
       RankedTensorType::get({paddedSize}, rootType.getElementType());
-  auto storeMarker =
-      StoreMarkerOp::create(b, loc, paddedResultType, storeOp.getSource(),
-                            tileView, ValueRange{bid});
+  auto storeMarker = StoreMarkerOp::create(
+      b, loc, paddedResultType, storeOp.getSource(), tileView, ValueRange{bid});
   storeOp.getSourceMutable().assign(storeMarker.getResult());
   storeOp.getDestMutable().assign(
       flattenAndPad(b, loc, storeOp.getDest(), paddedSize, bidOp));
@@ -861,10 +859,9 @@ void RockLowerNonGemmToBlockwisePass::runOnOperation() {
   }
   waveSize = rock::getWaveSize(archName);
 
-  LogicalResult result = reduceOps.empty()
-                             ? lowerMap(func, stores.front())
-                             : lowerReduce(func, reduceOps.front(),
-                                           stores.front());
+  LogicalResult result =
+      reduceOps.empty() ? lowerMap(func, stores.front())
+                        : lowerReduce(func, reduceOps.front(), stores.front());
   if (failed(result))
     return signalPassFailure();
 }
