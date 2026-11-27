@@ -89,13 +89,6 @@ target_link_libraries(TritonToHsacoTranslation
   lldCommon
 )
 
-if(WIN32)
-  target_link_libraries(TritonToHsacoTranslation
-    PRIVATE
-    dlfcn
-  )
-endif()
-
 rocmlir_add_triton_includes(TritonToHsacoTranslation)
 
 target_include_directories(obj.TritonToHsacoTranslation PRIVATE
