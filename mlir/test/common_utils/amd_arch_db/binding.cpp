@@ -112,4 +112,37 @@ PYBIND11_MODULE(amd_arch_db, m) {
         return mlir::rock::inferNumChiplets(arch, numCUs);
       },
       py::arg("arch"), py::arg("num_cus"));
+
+  m.def(
+      "parse_compute_partition_text",
+      [](const std::string &text) {
+        std::optional<mlir::rock::ComputePartitionMode> mode =
+            mlir::rock::parseComputePartitionText(text);
+        if (!mode)
+          return std::string();
+        switch (*mode) {
+        case mlir::rock::ComputePartitionMode::SPX:
+          return std::string("SPX");
+        case mlir::rock::ComputePartitionMode::DPX:
+          return std::string("DPX");
+        case mlir::rock::ComputePartitionMode::TPX:
+          return std::string("TPX");
+        case mlir::rock::ComputePartitionMode::QPX:
+          return std::string("QPX");
+        case mlir::rock::ComputePartitionMode::CPX:
+          return std::string("CPX");
+        }
+        return std::string();
+      },
+      py::arg("text"));
+
+  m.def(
+      "resolve_num_chiplets",
+      [](const std::string &arch, int64_t numCUs,
+         const std::string &partition) {
+        std::optional<mlir::rock::ComputePartitionMode> mode =
+            mlir::rock::parseComputePartition(partition);
+        return mlir::rock::resolveNumChiplets(arch, numCUs, mode);
+      },
+      py::arg("arch"), py::arg("num_cus"), py::arg("partition") = "");
 }

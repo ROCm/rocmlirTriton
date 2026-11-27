@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
+#include <optional>
 #include <tuple>
 
 namespace mlir {
@@ -115,7 +116,34 @@ int64_t getMinNumCU(StringRef arch);
 int64_t getMaxNumChiplets(StringRef arch);
 
 /// Infer the active chiplet count from the architecture and live CU count.
+/// This is the cross-compile fallback: a CU count does not identify a
+/// partitioned device, so callers that have a live GPU should prefer
+/// `resolveNumChiplets`.
 int64_t inferNumChiplets(StringRef arch, int64_t numCUs);
+
+/// Compute-partition mode reported by the driver for one logical device.
+/// SPX is the whole die, DPX/TPX/QPX split it into 2/3/4 devices, and CPX
+/// exposes one XCD per device.
+enum class ComputePartitionMode { SPX, DPX, TPX, QPX, CPX };
+
+/// Parse a single mode token ("DPX", "dpx"). Empty when `name` is not a mode.
+std::optional<ComputePartitionMode> parseComputePartition(StringRef name);
+
+/// Scan `text` (rocm-smi --showcomputepartition output) for a mode token.
+/// Empty when none is present, or when more than one distinct mode appears.
+std::optional<ComputePartitionMode> parseComputePartitionText(StringRef text);
+
+/// XCDs visible to one logical device in `partition`.
+/// Empty when this family has no published meaning for the mode (SPX, whose
+/// die size still comes from `inferNumChiplets`, gfx1250, and 1-XCD archs).
+/// A returned count is 1 or even, which is what the grid layout allows.
+std::optional<int64_t> numChipletsForPartition(StringRef arch,
+                                               ComputePartitionMode partition);
+
+/// Partition mode when the caller has one, otherwise `inferNumChiplets`.
+int64_t resolveNumChiplets(
+    StringRef arch, int64_t numCUs,
+    std::optional<ComputePartitionMode> partition = std::nullopt);
 
 /// Get maximum number of waves per EU per arch
 int64_t getMaxWavesPerEU(StringRef arch);
