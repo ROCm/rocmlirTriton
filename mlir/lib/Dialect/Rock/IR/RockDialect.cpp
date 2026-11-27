@@ -1960,17 +1960,17 @@ LogicalResult TransformsToPtrOp::inferReturnTypes(
 }
 
 //===-----------------------------------------------------===//
-// ReduceParamsAttr
+// NonGemmParamsAttr
 //===-----------------------------------------------------===//
 
 // Only the structural invariants are checked here. Whether a tile actually
-// suits a given reduction is arch-dependent (it takes the wave size, the
-// element width and the reduction extent), so those checks live in
-// `rock-lower-reduce-to-blockwise`, which has all three.
+// suits a given kernel is arch- and shape-dependent (it takes the wave size,
+// the element width, the extents, and whether there is a reduce at all), so
+// those checks live in `rock-lower-nongemm-to-blockwise`, which has them all.
 LogicalResult
-ReduceParamsAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
-                         int64_t rowsPerBlock, int64_t colsPerBlock,
-                         int64_t numWaves) {
+NonGemmParamsAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                          int64_t rowsPerBlock, int64_t colsPerBlock,
+                          int64_t numWaves, int64_t numStages) {
   if (rowsPerBlock <= 0 || colsPerBlock <= 0 || numWaves <= 0)
     return emitError() << "rowsPerBlock, colsPerBlock and numWaves must be "
                           "positive, got "
@@ -1981,6 +1981,12 @@ ReduceParamsAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
     return emitError() << "rowsPerBlock and colsPerBlock must be powers of "
                           "two, got "
                        << rowsPerBlock << " and " << colsPerBlock;
+  // numWaves is the workgroup's wave count, which Triton splits the tile
+  // across; a non-power-of-two one has no blocked layout to match.
+  if (!llvm::isPowerOf2_64(numWaves))
+    return emitError() << "numWaves must be a power of two, got " << numWaves;
+  if (numStages < 1)
+    return emitError() << "numStages must be at least 1, got " << numStages;
   return success();
 }
 

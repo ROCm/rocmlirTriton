@@ -500,42 +500,37 @@ void rock::buildKernelPipeline(OpPassManager &pm,
   buildKernelPipelineTail(pm, options);
 }
 
-void rock::buildElementwisePipeline(OpPassManager &pm,
-                                    const rock::KernelOptions &options) {
+void rock::buildNonGemmPipeline(OpPassManager &pm,
+                                const rock::KernelOptions &options) {
+  /* rocmlir-opt
+   *   --rock-regularize-nongemm
+   *   --rock-lower-nongemm-to-blockwise
+   *   --rock-regularize-input
+   *   --rock-lower-loads
+   *   --rock-lower-stores
+   */
   auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
     pm.nest<func::FuncOp>().addPass(std::move(pass));
     pm.addPass(createRemoveDeadValuesPass());
   };
 
-  addWithDCE(rock::createRockRegularizeElementwisePass());
-  addWithDCE(rock::createRockElementwiseToGridwisePass());
-  addWithDCE(rock::createRockGridwiseElementwiseToBlockwisePass());
-  addWithDCE(rock::createRockRegularizeInputPass());
-  addWithDCE(rock::createRockLowerLoadsPass());
-  addWithDCE(rock::createRockLowerStoresPass());
-
-  buildKernelPipelineTail(pm, options);
-}
-
-void rock::buildReducePipeline(OpPassManager &pm,
-                               const rock::KernelOptions &options) {
-  auto addWithDCE = [&pm](std::unique_ptr<Pass> pass) {
-    pm.nest<func::FuncOp>().addPass(std::move(pass));
-    pm.addPass(createRemoveDeadValuesPass());
-  };
-
-  pm.addPass(rock::createRockRegularizeReducePass());
+  // Pushes every view down to the leaves, so that what follows sees the
+  // elementwise ops stacked on one shape whatever the kernel's views were.
+  // The CSE is what then merges the copies of a view this leaves on an input
+  // that several ops read.
+  addWithDCE(rock::createRockRegularizeNonGemmPass());
   pm.addPass(createCSEPass());
 
   // The tile this pass picks is the whole schedule: `tritongpu-coalesce`
   // derives the blocked layout of the load from it, and that layout decides
-  // whether the resulting `tt.reduce` combines in registers, across the lanes
+  // whether a resulting `tt.reduce` combines in registers, across the lanes
   // of a wave, or through LDS. The tile is chosen against a workgroup of
-  // `kReduceNumWaves` waves, which has to be the `numWarps` the Triton
-  // pipeline is later run with; see that constant for why nothing enforces it.
-  rock::RockLowerReduceToBlockwisePassOptions lowerReduceOpts;
-  lowerReduceOpts.arch = options.arch;
-  addWithDCE(rock::createRockLowerReduceToBlockwisePass(lowerReduceOpts));
+  // `kNonGemmNumWaves` waves, which has to be the `numWarps` the Triton
+  // pipeline is later run with; see that constant for why nothing enforces
+  // it.
+  rock::RockLowerNonGemmToBlockwisePassOptions lowerOpts;
+  lowerOpts.arch = options.arch;
+  addWithDCE(rock::createRockLowerNonGemmToBlockwisePass(lowerOpts));
 
   addWithDCE(rock::createRockRegularizeInputPass());
   addWithDCE(rock::createRockLowerLoadsPass());
@@ -874,12 +869,10 @@ void rock::registerPipelines() {
       " representations and algorithms for sparse tensors.",
       buildKernelPipeline);
   PassPipelineRegistration<rock::KernelOptions>(
-      "rock-elementwise-pipeline",
-      "Lower standalone elementwise Rock kernels to TTIR-ready form.",
-      buildElementwisePipeline);
-  PassPipelineRegistration<rock::KernelOptions>(
-      "rock-reduce-pipeline", "Lower reduce rock kernels to Triton kernels",
-      buildReducePipeline);
+      "rock-nongemm-pipeline",
+      "Lower standalone nongemm Rock kernels, elementwise graphs with an "
+      "optional trailing reduction, to TTIR-ready form.",
+      buildNonGemmPipeline);
   PassPipelineRegistration<rock::TritonOptions>(
       "rock-triton-pipeline", "Convert Triton IR to TritonGPU IR.",
       buildTritonPipeline);

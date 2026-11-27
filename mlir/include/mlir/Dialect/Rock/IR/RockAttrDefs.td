@@ -653,48 +653,74 @@ def Rock_Kernel : Rock_Attr<"Kernel"> {
   }];
 }
 
-def Rock_Elementwise : Rock_Attr<"Elementwise"> {
-  let mnemonic = "rock.elementwise";
+def Rock_NonGemm : Rock_Attr<"NonGemm"> {
+  let mnemonic = "rock.nongemm";
   let description = [{
-    Marker attribute indicating that a kernel function is a standalone
-    elementwise kernel (no GEMM/conv/attention root).
+    Marker attribute indicating that a kernel function is a standalone nongemm
+    kernel: a graph of views (transpose, reshape, broadcast) and elementwise
+    ops, optionally ending in a single `rock.reduce`, with no GEMM, conv or
+    attention root. Such a kernel is lowered by the nongemm pipeline, which
+    needs no tuning parameters.
   }];
 }
 
-def Rock_Reduce : Rock_Attr<"Reduce"> {
-  let mnemonic = "rock.reduce";
+def Rock_NonGemmParams : Rock_Attr<"NonGemmParams"> {
+  let mnemonic = "nongemm_params";
   let description = [{
-    Marker attribute indicating that a kernel function is a standalone reduce
-    kernel (no GEMM/conv/attention root). Mutually exclusive with
-    `rock.elementwise`: a reduce kernel may fuse elementwise ops ahead of its
-    `rock.reduce`, but it is lowered by the reduce pipeline.
-  }];
-}
+    The schedule of a standalone nongemm kernel, as a function attribute.
+    Optional: `rock-lower-nongemm-to-blockwise` fills it in when absent and
+    validates (never silently overrides) one that is present, so a lit test or
+    a future perf config can pin a schedule.
 
-def Rock_ReduceParamsAttr : Rock_Attr<"ReduceParams"> {
-  let mnemonic = "reduce_params";
-  let description = [{
-    The schedule of a standalone `rock.reduce`.
+    It is a function attribute rather than an op attribute because a kernel
+    with no reduce has no op to carry it.
 
-    `rowsPerBlock` x `colsPerBlock` is the tile one workgroup loads per
-    iteration, with the reduction running along `colsPerBlock`. That shape is
-    the whole schedule: `tritongpu-coalesce` derives the blocked layout of the
-    load from it, and the layout is what decides whether the `tt.reduce` the
-    tile feeds combines within a thread (free), across the lanes of a wave
-    (DPP), or across waves (LDS plus a barrier). See
-    `docs/reduce-kernel-plan.md` for the table.
+    `rowsPerBlock` x `colsPerBlock` is the tile one workgroup holds per
+    iteration, over the canonical `M x N` view of the kernel: `M` rows of the
+    reduced tensor by the reduced extent `N` when there is a `rock.reduce`,
+    and `1 x totalElements` when there is not. Rows are the free axis, the
+    GEMM `m`; cols are the axis that is chunked, and when there is a reduce it
+    is the contracted one, the GEMM `k`.
 
-    `numWaves` must agree with the `numWarps` the Triton pipeline is run with,
-    since that sets both the real launch block size and the lane/wave split the
-    tile is chosen against.
+    That shape is the whole schedule, because `tritongpu-coalesce` derives the
+    blocked layout of the load from it and that layout is what decides whether
+    a `tt.reduce` combines in registers, across the lanes of a wave, or
+    through LDS. For a kernel with no reduce `rowsPerBlock` must be 1: with no
+    cross-lane combine to pay for, rows buy nothing and only cap the vector
+    width.
 
-    A `colsPerBlock` smaller than the reduction extent means the lowering has
-    to loop over the reduction axis.
+    A `colsPerBlock` smaller than the reduced extent means the lowering has to
+    walk the reduced axis a chunk at a time, in an `scf.for` that carries the
+    running sum in registers.
+
+    `numWaves` and `numStages` are not consumed by rock at all; they are the
+    launch and pipelining configuration the Triton pipeline must be run with,
+    and the tile above is only valid against them. `numWaves` is Triton's
+    `numWarps`, which sets the real block size as `numWarps * warpSize`
+    (`compileUtils.cpp`) as well as the lane/wave split the tile is chosen
+    against; `numStages` feeds `createTritonAMDGPUScheduleLoops`, which
+    software-pipelines the loop a reduction wider than `colsPerBlock` is
+    lowered to. Their defaults are the `TritonOptions` defaults, so that an
+    unset attribute describes what actually runs.
+
+    Note this is *not* `rock.block_size`, which means threads per workgroup
+    and is left unset by this pipeline: threads per block is
+    `waveSize(arch) * numWaves`, while elements per block is
+    `rowsPerBlock * colsPerBlock`.
   }];
   let parameters = (ins "int64_t":$rowsPerBlock, "int64_t":$colsPerBlock,
-      "int64_t":$numWaves);
+      DefaultValuedParameter<"int64_t", "4">:$numWaves,
+      DefaultValuedParameter<"int64_t", "2">:$numStages);
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
+  // The mnemonic is the `#rock.nongemm_params<...>` spelling of the value.
+  // The name it goes by when attached to a function needs the dialect prefix,
+  // like every other `rock.*` function attribute.
+  let extraClassDeclaration = [{
+    static constexpr ::llvm::StringLiteral getFuncAttrName() {
+      return ::llvm::StringLiteral("rock.nongemm_params");
+    }
+  }];
 }
 
 def Rock_ConvKernel : Rock_Attr<"ConvKernel"> {

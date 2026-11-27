@@ -143,17 +143,13 @@ static cl::opt<bool> disableFastMath(
         "themselves are worth: the quick tuning list is tuned with the "
         "3xBF16 dot decomposition enabled on gfx950"));
 
-static cl::opt<bool> elementwiseKernelMode(
-    "elementwise", cl::init(false),
-    cl::desc("Use the standalone elementwise GPU pipeline "
-             "(rock-elementwise-pipeline) instead of the default "
-             "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu"));
-
-static cl::opt<bool> reduceKernelMode(
-    "reduce", cl::init(false),
-    cl::desc("Use the standalone reduce GPU pipeline "
-             "(rock-reduce-pipeline) instead of the default "
-             "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu"));
+static cl::opt<bool> nonGemmKernelMode(
+    "nongemm", cl::init(false),
+    cl::desc("Use the standalone nongemm GPU pipeline "
+             "(rock-nongemm-pipeline) instead of the default "
+             "GEMM/conv/attention GPU pipeline for -kernel-pipeline=gpu. A "
+             "nongemm kernel is a graph of views and elementwise ops, "
+             "optionally ending in a single reduction"));
 
 /// Values copied out of the `cl::opt`s above before any pipeline runs.
 ///
@@ -312,15 +308,8 @@ runKernelPipeline(StringRef archName, ModuleOp m,
     opts.arch = archName.str();
     opts.disableFastMath = noFastMath;
 
-    if (elementwiseKernelMode && reduceKernelMode) {
-      llvm::errs() << "--elementwise and --reduce select different pipelines; "
-                      "pass at most one\n";
-      return failure();
-    }
-    if (elementwiseKernelMode)
-      rock::buildElementwisePipeline(pm, opts);
-    else if (reduceKernelMode)
-      rock::buildReducePipeline(pm, opts);
+    if (nonGemmKernelMode)
+      rock::buildNonGemmPipeline(pm, opts);
     else
       rock::buildKernelPipeline(pm, opts);
   }

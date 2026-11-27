@@ -140,45 +140,58 @@ def RockRegularizeInterGemmFusionPass
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect"];
 }
 
-def RockRegularizeElementwisePass
-    : Pass<"rock-regularize-elementwise", "::mlir::func::FuncOp"> {
-  let summary = "Push inter-fusion rock.transform ops to elementwise inputs";
+def RockRegularizeNonGemmPass
+    : Pass<"rock-regularize-nongemm", "::mlir::func::FuncOp"> {
+  let summary = "Push rock.transform ops to the inputs of a nongemm kernel";
+  let description = [{
+    A nongemm kernel is a graph of views and elementwise ops, so a view can
+    sit anywhere in it. This pass swaps each `rock.transform` with the fusion
+    op feeding it, which the two commute with, until every view has reached a
+    leaf and the elementwise ops are left stacked on one shape. The passes
+    that tile the kernel can then work in that single shape.
+  }];
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "math::MathDialect"];
 }
 
-def RockRegularizeReducePass
-    : Pass<"rock-regularize-reduce", "::mlir::func::FuncOp"> {
-  let summary = "Push rock.transform ops to input";
-}
-
-def RockLowerReduceToBlockwisePass
-    : Pass<"rock-lower-reduce-to-blockwise", "::mlir::func::FuncOp"> {
-  let summary = "Tile a standalone rock.reduce and lower it to a blockwise "
-                "reduction";
+def RockLowerNonGemmToBlockwisePass
+    : Pass<"rock-lower-nongemm-to-blockwise", "::mlir::func::FuncOp"> {
+  let summary = "Tile a standalone nongemm kernel into blockwise form";
   let description = [{
-    Lowers the `rock.reduce` of a standalone reduce kernel into a tiled
-    `rock.blockwise_reduce`, which `rock-to-ttir` turns into a `tt.reduce`.
+    Tiles a standalone nongemm kernel, a graph of views and elementwise ops
+    that optionally ends in a single `rock.reduce`, into one workgroup's
+    share of the work: a `rock.load_marker` per leaf input, the elementwise
+    ops retyped onto the tile, an optional `rock.blockwise_reduce`, and a
+    `rock.store_marker` on the way out. `rock-to-ttir` turns those into
+    `tt.load`, `tt.reduce` and `tt.store`.
 
-    The schedule is the tile shape `rowsPerBlock x colsPerBlock` recorded in
-    the op's `rock.reduce_params`. There is no algorithm choice beyond it:
-    `tritongpu-coalesce` derives the blocked layout of the load from the tile,
-    and that layout is what decides whether the reduction combines inside a
-    thread, across the lanes of a wave, or across waves through LDS. The pass
-    fills `params` in when the op does not carry one, and validates rather than
-    overrides one that it does.
+    Both kinds of kernel are tiled over the same canonical `M x N` view: `M`
+    rows of the reduced tensor by the reduced extent `N` when there is a
+    reduce, and `1 x totalElements` when there is not. The schedule is the
+    tile shape `rowsPerBlock x colsPerBlock` recorded in the function's
+    `rock.nongemm_params`, which the pass fills in when the function does not
+    carry one and validates rather than overrides when it does.
 
-    A reduction wider than one tile is summed a tile at a time in an `scf.for`
-    that carries the running sum in registers, with a single
-    `rock.blockwise_reduce` after the loop. The register footprint is therefore
-    set by the tile rather than by the length of the reduction, and there is
-    still exactly one cross-lane reduction and one writer per output.
-    `maxTileCols` is the register budget that decides when the loop appears.
+    There is no algorithm choice beyond that tile: `tritongpu-coalesce`
+    derives the blocked layout of the load from it, and that layout is what
+    decides whether a reduction combines inside a thread, across the lanes of
+    a wave, or across waves through LDS. A map has no such combine to pay
+    for, which is why its `rowsPerBlock` is always 1.
+
+    The one structural difference between the two is where the index of a
+    chunk of `N` comes from. A reduction has to accumulate its chunks in one
+    workgroup to keep a single writer per output row, so a reduced extent
+    wider than `colsPerBlock` becomes an `scf.for` carrying the running sum
+    in registers, with a single `rock.blockwise_reduce` after it;
+    `maxTileCols` is the register budget that decides when that loop appears.
+    A map's chunks are independent, so they go to the grid and there is no
+    loop.
 
     This pass only accepts what it can lower correctly and emits an error for
-    everything else: a single `sum` reduction over the last axis, static
-    shapes, no elementwise op between the reduction and its `rock.store`, and
-    inputs that are contiguous along the reduced axis.
+    everything else: one `rock.store`, at most one `rock.reduce`, and if
+    there is one, a `sum` over the last axis of a statically shaped tensor,
+    with no elementwise op between it and its store and inputs contiguous
+    along the reduced axis.
   }];
   let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
                            "func::FuncDialect", "scf::SCFDialect",
@@ -190,22 +203,6 @@ def RockLowerReduceToBlockwisePass
               "Largest reduced-axis extent of one tile; a reduction longer "
               "than this is summed a tile at a time in a loop">,
   ];
-}
-
-def RockElementwiseToGridwisePass
-    : Pass<"rock-elementwise-to-gridwise", "::mlir::func::FuncOp"> {
-  let summary =
-      "Compute grid size and flatten/pad standalone elementwise kernels";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "func::FuncDialect"];
-}
-
-def RockGridwiseElementwiseToBlockwisePass
-    : Pass<"rock-gridwise-elementwise-to-blockwise", "::mlir::func::FuncOp"> {
-  let summary =
-      "Insert load/store markers for tiled standalone elementwise kernels";
-  let dependentDialects = ["rock::RockDialect", "arith::ArithDialect",
-                           "func::FuncDialect", "triton::TritonDialect"];
 }
 
 def RockGridwiseGemmToBlockwisePass
