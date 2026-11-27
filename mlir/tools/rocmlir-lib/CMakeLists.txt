@@ -43,10 +43,6 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   add_library(${LIBRARY_NAME} INTERFACE)
 
   if (WIN32)
-    # Triton builds as separate static libraries on Windows, so propagate its
-    # registered targets through the fat-library interface and package.
-    get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
-
     # Members are installed by file path below, so ordering must be explicit.
     add_dependencies(${LIBRARY_NAME} ${__rocmlir_targets} ${__mlir_targets})
 
@@ -66,7 +62,15 @@ if(BUILD_FAT_LIBROCKCOMPILER)
               $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/${__library}.lib>)
     endforeach()
 
-    add_dependencies(${LIBRARY_NAME} ${__triton_libs})
+    target_link_libraries(${LIBRARY_NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:dlfcn>
+            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/dlfcn.lib>)
+
+    # TRITON_LIBS only contains OBJECT libs, which are already embedded into rocMLIR libs
+    # Link only static libraries produced by Triton (may be needed in future)
+    # TODO: Cleanup if not used for some time
+    get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
     foreach(__library ${__triton_libs})
       if(TARGET ${__library})
         get_target_property(__target_type ${__library} TYPE)
@@ -74,16 +78,14 @@ if(BUILD_FAT_LIBROCKCOMPILER)
         set(__target_type "")
       endif()
 
-      # TRITON_LIBS may include INTERFACE or custom/utility targets that have no
-      # physical library artifact. Install only concrete library artifacts.
-      if(__target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY)$")
+      if(__target_type STREQUAL "STATIC_LIBRARY")
+        add_dependencies(${LIBRARY_NAME} ${__library})
         list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+        target_link_libraries(${LIBRARY_NAME}
+            INTERFACE
+                $<BUILD_INTERFACE:${__library}>
+                $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
       endif()
-
-      target_link_libraries(${LIBRARY_NAME}
-          INTERFACE
-              $<BUILD_INTERFACE:${__library}>
-              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
       unset(__target_type)
     endforeach()
 
@@ -91,6 +93,9 @@ if(BUILD_FAT_LIBROCKCOMPILER)
             DESTINATION lib/llvm)
 
     rocm_install(FILES ${__rocmlir_libraries}
+            DESTINATION lib)
+
+    rocm_install(FILES $<TARGET_FILE:dlfcn>
             DESTINATION lib)
 
     rocm_install(FILES ${__triton_libraries}
