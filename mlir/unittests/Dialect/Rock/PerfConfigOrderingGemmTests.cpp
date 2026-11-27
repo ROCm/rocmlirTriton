@@ -62,7 +62,8 @@ struct GemmOrderingTestEnv {
         /*useBufferAtomics=*/kKnobDefault,
         /*useReductionLayout=*/kKnobDefault,
         /*useOptimizeEpilogue=*/kKnobDefault,
-        /*useBf16x3ForF32=*/kKnobDefault);
+        /*useBf16x3ForF32=*/kKnobDefault,
+        /*useKTailPeeling=*/kKnobDefault);
   }
 };
 
