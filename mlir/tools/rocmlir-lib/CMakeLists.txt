@@ -43,6 +43,24 @@ if(BUILD_FAT_LIBROCKCOMPILER)
   add_library(${LIBRARY_NAME} INTERFACE)
 
   if (WIN32)
+    # TritonToHsacoTranslation is static and links dlfcn-win32 privately, so its
+    # dlopen/dlsym references reach the consumer's final link. Export the copy it
+    # links: the fetched dlfcn-win32 `dl`, which installs itself, or else Triton's
+    # bundled `dlfcn`, which has no install rule.
+    if(TARGET dl)
+      set(__dlfcn_target dl)
+    elseif(TARGET dlfcn)
+      set(__dlfcn_target dlfcn)
+      rocm_install(FILES $<TARGET_FILE:dlfcn> DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    else()
+      message(FATAL_ERROR "No dlfcn-win32 target found for the rockCompiler export")
+    endif()
+    target_link_libraries(${LIBRARY_NAME}
+        INTERFACE
+            $<BUILD_INTERFACE:${__dlfcn_target}>
+            $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/${__dlfcn_target}.lib>)
+    unset(__dlfcn_target)
+
     # Triton builds as separate static libraries on Windows, so propagate its
     # registered targets through the fat-library interface and package.
     get_property(__triton_libs GLOBAL PROPERTY TRITON_LIBS)
@@ -78,12 +96,16 @@ if(BUILD_FAT_LIBROCKCOMPILER)
       # physical library artifact. Install only concrete library artifacts.
       if(__target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY)$")
         list(APPEND __triton_libraries $<TARGET_FILE:${__library}>)
+        target_link_libraries(${LIBRARY_NAME}
+            INTERFACE
+                $<BUILD_INTERFACE:${__library}>
+                $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
+      else()
+        target_link_libraries(${LIBRARY_NAME}
+            INTERFACE
+                $<BUILD_INTERFACE:${__library}>)
       endif()
 
-      target_link_libraries(${LIBRARY_NAME}
-          INTERFACE
-              $<BUILD_INTERFACE:${__library}>
-              $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/llvm/${__library}.lib>)
       unset(__target_type)
     endforeach()
 
