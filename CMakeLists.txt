@@ -157,6 +157,71 @@ if(WIN32)
   )
 endif()
 
+#===----------------------------------------------------------------------===//
+# Windows security hardening: Control Flow Guard, Spectre mitigation, MSVC
+# static runtime, and disabling LLVM assertions in shipped binaries. Ported
+# from rocMLIR's legacy CMakeLists.txt so BinSkim-gated Windows packaging
+# (e.g. WCRforAMD) gets the same compliance flags.
+#
+# Must run before include(cmake/triton.cmake): that file add_subdirectory()s
+# the in-tree LLVM and Triton, which only inherit directory-scoped
+# add_compile_options()/add_link_options() set before they are created, and
+# it sets its own (non-FORCEd) LLVM_ENABLE_ASSERTIONS default, which the
+# FORCE below must win against.
+#===----------------------------------------------------------------------===//
+
+if(WIN32)
+  option(ROCMLIR_USE_BINSKIM_COMPLIANT_COMPILE_FLAGS "Prepare rocmlirTriton for BinSkim Binary Analyzer" OFF)
+  option(ROCMLIR_USE_SPECTRE_MITIGATED_LIBRARIES "Use Spectre-mitigated libraries" OFF)
+  option(ROCMLIR_USE_MSVC_STATIC_RUNTIME "Link MSVC runtime library statically instead of dynamically" OFF)
+
+  # Plain-string mirrors of the flags below. triton_amd_codegen.dll and its
+  # private LLVM are configured by ExternalProject_Add in cmake/triton.cmake
+  # -- a fully separate CMake configure that does not see this directory's
+  # add_compile_options()/add_link_options() -- so that file forwards these
+  # strings into that external build's CMAKE_ARGS instead.
+  set(ROCMLIR_WIN_SECURITY_COMPILE_FLAGS "")
+  set(ROCMLIR_WIN_SECURITY_LINK_FLAGS "")
+
+  if(MSVC AND MSVC_VERSION GREATER_EQUAL 1900)
+    if(ROCMLIR_USE_BINSKIM_COMPLIANT_COMPILE_FLAGS)
+      message(STATUS "Control Flow Guard enabled")
+      add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/guard:cf>)
+      add_link_options(/guard:cf /DYNAMICBASE)
+      string(APPEND ROCMLIR_WIN_SECURITY_COMPILE_FLAGS " /guard:cf")
+      string(APPEND ROCMLIR_WIN_SECURITY_LINK_FLAGS " /guard:cf /DYNAMICBASE")
+    endif()
+    if(ROCMLIR_USE_SPECTRE_MITIGATED_LIBRARIES)
+      message(STATUS "Using Spectre-mitigated libraries")
+      add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/Qspectre>)
+      string(APPEND ROCMLIR_WIN_SECURITY_COMPILE_FLAGS " /Qspectre")
+    endif()
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(ROCMLIR_USE_BINSKIM_COMPLIANT_COMPILE_FLAGS)
+      message(STATUS "Control Flow Guard enabled (Clang)")
+      add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-Xclang -cfguard>")
+      add_link_options(-Wl,-guard:cf)
+      string(APPEND ROCMLIR_WIN_SECURITY_COMPILE_FLAGS " -Xclang -cfguard")
+      string(APPEND ROCMLIR_WIN_SECURITY_LINK_FLAGS " -Wl,-guard:cf")
+    endif()
+    if(ROCMLIR_USE_SPECTRE_MITIGATED_LIBRARIES)
+      message(WARNING "Spectre mitigated libraries are not yet available for Clang in this project.")
+    endif()
+  endif()
+
+  # Disable LLVM/MLIR/Rock/Triton assertions in Windows builds so BinSkim-gated
+  # packages never ship a build that abort()s the host process on an assert.
+  # FORCE wins over cmake/triton.cmake's build-type-driven, non-FORCEd default.
+  set(LLVM_ENABLE_ASSERTIONS OFF CACHE BOOL "" FORCE)
+
+  if(NOT ROCMLIR_USE_MSVC_STATIC_RUNTIME)
+    set(ROCMLIR_MSVC_RUNTIME_SUFFIX "DLL")
+  endif()
+  if(NOT CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>${ROCMLIR_MSVC_RUNTIME_SUFFIX}")
+  endif()
+endif()
+
 # Adapted from https://blog.kitware.com/cmake-and-the-default-build-type/
 set(default_build_type "Release")
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -345,3 +410,6 @@ endif()
 #===----------------------------------------------------------------------===//
 
 add_subdirectory(mlir)
+
+set(CPACK_SOURCE_IGNORE_FILES "/.git/" "/build/" ".*-subbuild/" ".*-build/")
+include(CPack)

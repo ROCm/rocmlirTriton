@@ -47,6 +47,10 @@ else()
   message(STATUS "Fetching AMD Codegen LLVM/MLIR: ${ROCMLIR_AMD_CODEGEN_LLVM_GIT_REPOSITORY}@${ROCMLIR_AMD_CODEGEN_LLVM_GIT_BRANCH}")
 endif()
 
+if(FETCHCONTENT_FULLY_DISCONNECTED AND IS_DIRECTORY ${CMAKE_SOURCE_DIR}/external)
+  set(FETCHCONTENT_BASE_DIR ${CMAKE_SOURCE_DIR}/external)
+endif()
+
 FetchContent_Declare(
   llvm-project
   URL "${ROCMLIR_LLVM_GIT_REPOSITORY}/archive/refs/heads/${ROCMLIR_LLVM_GIT_BRANCH}.tar.gz"
@@ -493,6 +497,29 @@ foreach(_var
     list(APPEND _amd_codegen_tool_args "-D${_var}=${${_var}}")
   endif()
 endforeach()
+
+# Forward the Windows BinSkim/CFG/Spectre/static-runtime flags computed in the
+# top-level CMakeLists.txt. amd_codegen_llvm_build and triton_amd_codegen are
+# each configured by ExternalProject_Add as a fully separate CMake invocation,
+# so they see none of this directory's add_compile_options()/add_link_options()
+# and must receive the equivalent flags as plain CMAKE_<LANG>_FLAGS/_LINKER_FLAGS.
+if(WIN32)
+  if(ROCMLIR_WIN_SECURITY_COMPILE_FLAGS)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_C_FLAGS=${ROCMLIR_WIN_SECURITY_COMPILE_FLAGS}"
+      "-DCMAKE_CXX_FLAGS=${ROCMLIR_WIN_SECURITY_COMPILE_FLAGS}")
+  endif()
+  if(ROCMLIR_WIN_SECURITY_LINK_FLAGS)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_EXE_LINKER_FLAGS=${ROCMLIR_WIN_SECURITY_LINK_FLAGS}"
+      "-DCMAKE_SHARED_LINKER_FLAGS=${ROCMLIR_WIN_SECURITY_LINK_FLAGS}")
+  endif()
+  if(CMAKE_MSVC_RUNTIME_LIBRARY)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}")
+  endif()
+endif()
+
 set(triton_amd_codegen_libname "${CMAKE_SHARED_LIBRARY_PREFIX}triton_amd_codegen${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
 if(ROCMLIR_AMD_CODEGEN_LLVM_DIR)
@@ -513,7 +540,7 @@ else()
       -DLLVM_TARGETS_TO_BUILD=AMDGPU
       -DLLVM_BUILD_UTILS=OFF
       -DLLVM_INCLUDE_TESTS=OFF
-      -DLLVM_ENABLE_ASSERTIONS=ON
+      -DLLVM_ENABLE_ASSERTIONS=${LLVM_ENABLE_ASSERTIONS}
       -DLLVM_ENABLE_ZSTD=OFF
     INSTALL_COMMAND ""
     BUILD_BYPRODUCTS "<BINARY_DIR>/lib/cmake/llvm/LLVMConfig.cmake"

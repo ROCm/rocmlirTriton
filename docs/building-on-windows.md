@@ -105,8 +105,13 @@ With MSVC, drop `CMAKE_RC_COMPILER` and add:
 Notes on the Windows-specific flags:
 
 - `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` — selects the static CRT (`/MT`).
-  Not a default: set it only to match the consumer, since a library and the
+  Not a default unless `-DROCMLIR_USE_MSVC_STATIC_RUNTIME=ON` is passed (default
+  OFF, dynamic CRT); set it only to match the consumer, since a library and the
   application linking it must agree, or they end up with separate heaps.
+  `-DROCMLIR_USE_BINSKIM_COMPLIANT_COMPILE_FLAGS=ON` and
+  `-DROCMLIR_USE_SPECTRE_MITIGATED_LIBRARIES=ON` enable Control Flow Guard and
+  Spectre mitigation respectively (both default OFF), and are forwarded to the
+  standalone `triton_amd_codegen` build as well.
 - `LLVM_ENABLE_DIA_SDK=OFF` — avoids requiring the optional ATL component.
 - `CMAKE_RC_COMPILER=llvm-rc.exe` — needed for clang-cl only. `llvm-rc.exe`
   sits beside `clang-cl`: under `lib/llvm/bin` on TheRock, under `bin` on the
