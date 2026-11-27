@@ -137,9 +137,17 @@ def Rock_GemmOp
     `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
     power-of-two exponent, value = 2^(byte - 127). `rocmlir-gen` defaults
     `quantBlockSize` to 32, but E8M0 can also be used with block size 16.
-    This matches V_MFMA_SCALE_F32_*_F8F6F4. `f8E4M3FN` is the gfx1250 WMMA
-    scale and requires `quantBlockSize` 16. Do not bitcast `f8E4M3FN` to `i8`:
-    `i8` means E8M0.
+    This matches V_MFMA_SCALE_F32_*_F8F6F4 and, on gfx1250,
+    `v_wmma_scale` (block 32) / `v_wmma_scale16` (block 16). `f8E4M3FN` is
+    the gfx1250 WMMA scale and requires `quantBlockSize` 16. Do not bitcast
+    `f8E4M3FN` to `i8`: `i8` means E8M0.
+
+    Both gfx1250 scale instructions accept the same mixed f8/f4 pairs:
+    E8M0 on both sides for any mix of `f8E4M3FN`, `f8E5M2`, and `f4E2M1FN`;
+    `f8E4M3FN` on both sides only for fp4 x fp4; and a mixed scale pair only
+    when the fp4 side uses `f8E4M3FN` and the fp8 side uses E8M0. The
+    instruction can encode fp6 as well, but Triton does not lower it, so
+    fp6 is not a gemm input.
 
     The parameters `gridSize` and `params` are optional as
     they can be inferred by a tuning process or a heuristic, but they must be
@@ -672,7 +680,10 @@ def Rock_BlockwiseGemmOp
     `f8E8M0FNU` (E8M0) is the gfx950 / MXFP scale: each byte encodes a
     power-of-two exponent, value = 2^(byte - 127), and the block size is 32.
     `i8` is that same E8M0 encoding after a bitcast. `f8E4M3FN` is the gfx1250
-    WMMA scale and uses block size 16. Do not bitcast `f8E4M3FN` to `i8`.
+    WMMA scale (`v_wmma_scale16`, and the fp4 side of a mixed pair) and uses
+    block size 16. Do not bitcast `f8E4M3FN` to `i8`. An `f8E4M3FN` scale is
+    legal for fp4 x fp4 on both sides, or for mixed fp8/fp4 when it sits on
+    the fp4 operand and the fp8 operand uses E8M0.
 
     During RockToTTIR lowering, this op maps to `tt.dot_scaled` when scales are
     present. The scale element type is preserved: `i8` is E8M0 for the gfx950

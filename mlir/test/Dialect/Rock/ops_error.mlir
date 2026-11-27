@@ -696,7 +696,8 @@ func.func @gemm_scaleB_transposed_k_mismatch(%a: tensor<2x64x128xf4E2M1FN>, %b: 
   func.return
 }
 
-// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+// The block-size rule fires before the type-pair check. fp4 x fp4 with a
+// mixed E8M0/E4M3 scale pair is illegal even at quantBlockSize 16.
 func.func @gemm_e4m3_scaleA_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
   %scaleA: tensor<64x4xf8E4M3FN>, %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
@@ -705,12 +706,150 @@ func.func @gemm_e4m3_scaleA_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128
   func.return
 }
 
-// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+// The block-size rule fires before the type-pair check. fp4 x fp4 with a
+// mixed E8M0/E4M3 scale pair is illegal even at quantBlockSize 16.
 func.func @gemm_e4m3_scaleB_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
   %scaleA: tensor<64x4xf8E8M0FNU>, %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
   rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
   : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// f8 x f8 cannot use f8E4M3FN scales, on scale or scale16.
+func.func @gemm_e4m3_scale_f8_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf8E4M3FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// fp4 x fp4 does not accept one E8M0 scale and one f8E4M3FN scale.
+func.func @gemm_e4m3_scale_f4_mixed_block_16(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E8M0FNU>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x8xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// The illegal block-16 pairs not covered above (cases N1 to N5 of the gfx1250
+// block-16 test plan). An f8E4M3FN scale is legal only on an fp4 operand: on
+// both sides of fp4 x fp4, or on the fp4 side of a mixed pair whose fp8 side
+// keeps E8M0. The legal pairs are covered by
+// rocmlir-driver/scaled_wmma16_assembly.mlir.
+
+// Case N1. Mixed f8 x f4 with the E4M3 scale on the f8 side.
+func.func @gemm_e4m3_scale_on_f8_side_of_f8_f4_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N2. The mirror of case N1: mixed f4 x f8, E4M3 scale on the f8 side.
+func.func @gemm_e4m3_scale_on_f8_side_of_f4_f8_block_16(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x8xf8E8M0FNU>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x8xf8E8M0FNU> * tensor<128x32xf8E4M3FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N3. Mixed f8 x f4 with E4M3 scales on both sides: the f8 side must
+// keep E8M0.
+func.func @gemm_e4m3_scale_both_sides_of_f8_f4_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N4. fp4 x fp4 with E4M3 on A and E8M0 on B, the mirror of
+// @gemm_e4m3_scale_f4_mixed_block_16.
+func.func @gemm_e4m3_scale_f4_mixed_a_block_16(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x8xf8E4M3FN>,
+                                  %scaleB: tensor<32x8xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x8xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x8xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case N5. f8 x f8 (fp8 x bf8) with a single E4M3 scale. f8 x f8 accepts only
+// E8M0, on either side.
+func.func @gemm_e4m3_scale_one_side_f8_f8_block_16(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf8E5M2>,
+                                  %scaleA: tensor<64x8xf8E8M0FNU>,
+                                  %scaleB: tensor<32x8xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require fp4xfp4 with f8E4M3FN on both sides}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 16 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x8xf8E8M0FNU> * tensor<128x32xf8E5M2> scaled by tensor<32x8xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// The legal block-16 E4M3 pairs (cases T10 to T14 of
+// rocmlir-driver/scaled_wmma16_assembly.mlir) at quantBlockSize 32, cases NB10
+// to NB14. Each passes at block 16, so the block size alone causes the error.
+// This is an RMT limitation, not an ISA rule: gfx1250's v_wmma_scale takes
+// E4M3 scales on fp4 operands, and Triton runs these pairs at block 32. These
+// cases are expected to change if RMT adds E4M3 at block 32.
+
+// Case NB10. Mixed f8 x f4 with the E4M3 scale on the f4 side (T10 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f8_f4_block_32(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB11. As case NB10 with bf8 on the f8 side (T11 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_bf8_f4_block_32(%a: tensor<64x128xf8E5M2>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf8E5M2> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB12. The mirror of case NB10: mixed f4 x f8, E4M3 scale on the f4
+// side (T12 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f4_f8_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf8E4M3FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB13. As case NB12 with bf8 on the f8 side (T13 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f4_bf8_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E5M2>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf8E5M2> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB14. fp4 x fp4 with E4M3 scales on both sides (T14 at block 32).
+func.func @gemm_e4m3_scale_both_sides_f4_f4_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
   func.return
 }
 
@@ -796,7 +935,7 @@ func.func @gridwise_gemm_scaleB_dims_mismatch(%A: tensor<1x8x32xf4E2M1FN>, %B: t
   func.return
 }
 
-// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+// The block-size rule fires before the type-pair check.
 func.func @gridwise_gemm_e4m3_scaleA_block_32(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
     %scaleA: tensor<1x8x1xf8E4M3FN>, %scaleB: tensor<1x16x1xf8E8M0FNU>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
@@ -808,7 +947,7 @@ func.func @gridwise_gemm_e4m3_scaleA_block_32(%A: tensor<1x8x32xf4E2M1FN>, %B: t
   func.return
 }
 
-// Mixed E4M3/E8M0 scales are legal. E4M3 still requires quantBlockSize 16.
+// The block-size rule fires before the type-pair check.
 func.func @gridwise_gemm_e4m3_scaleB_block_32(%A: tensor<1x8x32xf4E2M1FN>, %B: tensor<1x32x16xf4E2M1FN>, %C: tensor<1x8x16xf32>,
     %scaleA: tensor<1x8x1xf8E8M0FNU>, %scaleB: tensor<1x16x1xf8E4M3FN>) attributes {rock.arch = "##TOKEN_ARCH##"} {
   // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}

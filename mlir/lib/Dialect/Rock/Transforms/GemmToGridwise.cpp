@@ -140,10 +140,22 @@ GemmRewritePattern::matchAndRewrite(GemmOp op, GemmOpAdaptor adaptor,
 
   // TODO: use AmdArchDb to figure out when we need to convert A and B instead
   // of hardcoding it! Extend input types to the highest-precision type among
-  // the inputs
-  if (elemTypeA != elemTypeB &&
-      (!isa<FloatType>(elemTypeA) || !isa<FloatType>(elemTypeB) ||
-       elemAWidth != 8 || elemBWidth != 8)) {
+  // the inputs.
+  // Mixed 8-bit floats (fp8 x bf8) already stay as they are. Scaled WMMA and
+  // scaled MFMA also multiply mixed f8/f4 (and f6, where the arch lowers it)
+  // directly, so a scaled gemm must not promote the narrower operand.
+  auto isScaledSmallFloat = [](Type type) {
+    return isa<Float8E4M3FNType, Float8E4M3FNUZType, Float8E5M2Type,
+               Float8E5M2FNUZType, Float6E2M3FNType, Float6E3M2FNType,
+               Float4E2M1FNType>(type);
+  };
+  bool mixed8BitFloat = isa<FloatType>(elemTypeA) &&
+                        isa<FloatType>(elemTypeB) && elemAWidth == 8 &&
+                        elemBWidth == 8;
+  bool preserveScaledMix = scaleA && scaleB &&
+                           isScaledSmallFloat(elemTypeA) &&
+                           isScaledSmallFloat(elemTypeB);
+  if (elemTypeA != elemTypeB && !mixed8BitFloat && !preserveScaledMix) {
     if (elemTypeA.getIntOrFloatBitWidth() > elemTypeB.getIntOrFloatBitWidth()) {
       auto newBType = RankedTensorType::get(bShape, elemTypeA);
       b = createTypeConversionOp(rw, loc, b, newBType);

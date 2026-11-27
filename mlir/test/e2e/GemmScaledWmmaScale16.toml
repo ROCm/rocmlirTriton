@@ -1,0 +1,166 @@
+# Copyright Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# gfx1250 block-16 scaled GEMM (v_wmma_scale16_f32_16x16x128_f8f6f4), checked
+# numerically against the CPU reference. This is the e2e half of
+# mlir/test/rocmlir-driver/scaled_wmma16_assembly.mlir: each [[suite]] here is
+# one case there (t1 = Case T1, ...) with the same data types and scale types.
+#
+# The ISA test pins one tile with --perf_config to check the instruction. These
+# tests leave the tiling to the heuristic and vary the shape (tile-sized, odd,
+# batched with several K steps, large) to check the numbers.
+#
+# gfx1250 supports only K-packed scaled inputs, so A is MxK (transA=false) and
+# B is NxK (transB=true).
+#
+# Data: non-negative random values. MX scales are unsigned (the hardware ignores
+# the E4M3 sign bit; the CPU reference does not), and `-rand none` is avoided
+# because an all-zero FP4 output can pass against an all-ones reference.
+directory = "GemmScaledWmmaScale16"
+prefix = "rocmlir-gen"
+suffix = "--operation gemm --scaledGemm --quantBlockSize=16 --transA=false --transB=true -rand 1 -rand_type float -rand_min 0 -rand_max 2 -out_dtype f32 --arch %arch %pv %rocmlir_gen_flags | rocmlir-driver -c | rocm-run | FileCheck %s --check-prefix="
+
+[[axis]]
+name = "transO"
+values = ["true", "false"]
+prefix = "--transO="
+
+# Case T1. f8E4M3FN x f8E4M3FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t1"
+
+[[suite.test]]
+config = "-t f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T2. f8E5M2 x f8E5M2, E8M0 x E8M0 scales.
+[[suite]]
+name = "t2"
+
+[[suite.test]]
+config = "-t f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T3. f8E4M3FN x f8E5M2, E8M0 x E8M0 scales.
+[[suite]]
+name = "t3"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T4. f8E5M2 x f8E4M3FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t4"
+
+[[suite.test]]
+config = "-t f8E5M2_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T5. f4E2M1FN x f4E2M1FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t5"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T6. f8E4M3FN x f4E2M1FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t6"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T7. f4E2M1FN x f8E4M3FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t7"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E4M3FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T8. f8E5M2 x f4E2M1FN, E8M0 x E8M0 scales.
+[[suite]]
+name = "t8"
+
+[[suite.test]]
+config = "-t f8E5M2_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T9. f4E2M1FN x f8E5M2, E8M0 x E8M0 scales.
+[[suite]]
+name = "t9"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E5M2 -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T10. f8E4M3FN x f4E2M1FN, E8M0 x E4M3 scales.
+[[suite]]
+name = "t10"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E4M3FN_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN -g 1 -m 33 -k 48 -n 17"
+
+# Case T11. f8E5M2 x f4E2M1FN, E8M0 x E4M3 scales.
+[[suite]]
+name = "t11"
+
+[[suite.test]]
+config = "-t f8E5M2_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f8E5M2_f4E2M1FN -scale_a_dtype f8E8M0FNU -scale_b_dtype f8E4M3FN -g 1 -m 33 -k 48 -n 17"
+
+# Case T12. f4E2M1FN x f8E4M3FN, E4M3 x E8M0 scales.
+[[suite]]
+name = "t12"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E4M3FN -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E4M3FN -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T13. f4E2M1FN x f8E5M2, E4M3 x E8M0 scales.
+[[suite]]
+name = "t13"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E5M2 -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN_f8E5M2 -scale_a_dtype f8E4M3FN -scale_b_dtype f8E8M0FNU -g 1 -m 33 -k 48 -n 17"
+
+# Case T14. f4E2M1FN x f4E2M1FN, E4M3 x E4M3 scales.
+[[suite]]
+name = "t14"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E4M3FN -scale_b_dtype f8E4M3FN -g 1 -m 64 -k 128 -n 64"
+
+[[suite.test]]
+config = "-t f4E2M1FN -scale_a_dtype f8E4M3FN -scale_b_dtype f8E4M3FN -g 1 -m 33 -k 48 -n 17"

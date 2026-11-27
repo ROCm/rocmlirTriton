@@ -69,6 +69,8 @@ if (ROCK_E2E_TEST_ENABLED)
   GemmScaled
   GemmScaledF8
   GemmScaledF32
+  GemmScaledWmmaScale16
+  GemmScaledWmmaScale32
   MixedConvLayouts
   GemmVariantsNonPowerOfTwoTileSize
   GemmVariantsNonPowerOfTwoTileSizeFp8

@@ -335,3 +335,24 @@ func.func @gemm_scaled_fp4_splitk_odd(%arg0: tensor<589824xf4E2M1FN>, %arg1: ten
   %out = rock.store %result to %2 by set : tensor<3x256x256xf32> -> tensor<196608xf32> to tensor<3x256x256xf32>
   func.return %out : tensor<196608xf32>
 }
+
+// Mixed f8 x f4 stays mixed. The scale16 pair is f8E8M0FNU on the f8 operand
+// and f8E4M3FN on the f4 operand. Promoting f4 to f8 would drop the scaled WMMA.
+// CHECK-LABEL: func.func @gemm_scaled_mixed_f8_f4
+// CHECK-NOT: arith.extf
+// CHECK: rock.gridwise_gemm({{.*}}) {{.*}} : tensor<1x64x128xf8E4M3FN>, tensor<1x128x64xf4E2M1FN>, tensor<1x64x8xf8E8M0FNU>, tensor<1x64x8xf8E4M3FN>
+func.func @gemm_scaled_mixed_f8_f4(
+    %a: tensor<1x64x128xf8E4M3FN>, %b: tensor<1x128x64xf4E2M1FN>,
+    %c: tensor<1x64x64xf32>,
+    %scaleA: tensor<1x64x8xf8E8M0FNU>, %scaleB: tensor<1x64x8xf8E4M3FN>)
+    -> tensor<1x64x64xf32> attributes {rock.arch = "amdgcn-amd-amdhsa:gfx1250"} {
+  %result = rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {
+    params = #rock.gemm_params<mPerBlock = 64, nPerBlock = 64, kPerBlock = 128,
+                               kpack = 1, numWaves = 4, matrixInstrNonkdim = 0,
+                               splitKFactor = 1, numStages = 2, wavesPerEU = 0,
+                               gridGroupSize = 0, numCTAs = 1>,
+    quantBlockSize = 16 : i64
+  } : tensor<1x64x128xf8E4M3FN> scaled by tensor<1x64x8xf8E8M0FNU> * tensor<1x128x64xf4E2M1FN> scaled by tensor<1x64x8xf8E4M3FN> -> tensor<1x64x64xf32>
+  %out = rock.store %result to %c by set : tensor<1x64x64xf32> -> tensor<1x64x64xf32> to tensor<1x64x64xf32>
+  func.return %out : tensor<1x64x64xf32>
+}

@@ -99,6 +99,12 @@ def apply_arch_features(config, lit_config):
 # already shaped the device list `get_agents` saw.
 DEVICE_SELECTION_VARS = ('HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')
 
+# The HSA runtime loads a functional GPU model (for example the MI450 / gfx1250
+# FFM) in place of the real kernel driver when these are set. lit configuration
+# sees the model's device, so the tests must too: without them the kernels run
+# on the host GPU, or fail to load, while `config.arch` names the model.
+DEVICE_MODEL_VARS = ('HSA_MODEL_LIB', 'HSA_MODEL_TOPOLOGY')
+
 
 def apply_device_environment(config):
     """Point the test environment at the same device `apply_arch_features` used
@@ -112,6 +118,11 @@ def apply_device_environment(config):
     architecture visible looks homogeneous here, so the '0' fallback below
     would not fire and the mismatch would go unannounced.
     """
+    for var in DEVICE_MODEL_VARS:
+        value = os.environ.get(var)
+        if value is not None:
+            config.environment[var] = value
+
     selected = False
     for var in DEVICE_SELECTION_VARS:
         value = os.environ.get(var)
