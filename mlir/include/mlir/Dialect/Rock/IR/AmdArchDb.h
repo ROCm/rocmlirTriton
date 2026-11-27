@@ -34,6 +34,22 @@ enum class MatrixAccelKind {
   ScaledWMMA  /// AMD gfx1250 Scaled Wave Matrix Multiply-Accumulate (F8/F4 with scales)
 };
 
+/// Whether this operand and scale combination is legal for gfx1250 scaled
+/// WMMA (`v_wmma_scale*` and `v_wmma_scale16*`, the block-32 and block-16
+/// forms of the 16x16x128 f8f6f4 instruction).
+///
+/// Both block sizes accept the same type pairs. `scaleA` / `scaleB` element
+/// types are `f8E8M0FNU`, `f8E4M3FN`, or `i8` (the E8M0 bitcast):
+/// - E8M0 x E8M0: any mix of f8E4M3FN, f8E5M2, and f4E2M1FN
+/// - f8 x f4: E8M0 on the f8 side and f8E4M3FN on the f4 side
+/// - f4 x f8: f8E4M3FN on the f4 side and E8M0 on the f8 side
+/// - f4 x f4: f8E4M3FN on both sides
+///
+/// The instruction can also encode f6 (f6E2M3FN / f6E3M2FN), but Triton does
+/// not lower those encodings, so they are rejected here.
+bool isLegalScaledWmmaTypeCombo(Type elemA, Type scaleA, Type elemB,
+                                Type scaleB);
+
 /// Check if hardware matrix acceleration (MFMA or WMMA) is available
 /// for the given architecture and data types.
 ///

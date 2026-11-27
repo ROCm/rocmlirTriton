@@ -567,24 +567,53 @@ func.func @test_scaled_gemm_f8(
 // -----
 
 // Test: gfx1250 E4M3 scales stay f8E4M3FN through tt.dot_scaled.
-// quantBlockSize 16 covers K=64 with a scale K of 4. i8 would mean E8M0.
+// fp4 x fp4 is the pair that may use f8E4M3FN on both sides. The data is the
+// packed i8 form LegalizeFloatTypes produces (K halved). quantBlockSize 16
+// selects v_wmma_scale16. An i8 scale would mean E8M0.
 
 // CHECK-LABEL: @test_scaled_gemm_e4m3_scale
-// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FN>, %[[B:.*]]: tensor<64x64xf8E4M3FN>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x4xf8E4M3FN>, %[[SB:.*]]: tensor<64x4xf8E4M3FN>)
+// CHECK-SAME: (%[[A:.*]]: tensor<64x32xi8>, %[[B:.*]]: tensor<32x64xi8>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x4xf8E4M3FN>, %[[SB:.*]]: tensor<64x4xf8E4M3FN>)
 //      CHECK:   tt.dot_scaled %[[A]] scale %[[SA]], %[[B]] scale %[[SB]], %[[C]]
-// CHECK-SAME:     lhs = e4m3 rhs = e4m3
-// CHECK-SAME:     tensor<64x4xf8E4M3FN> * tensor<64x64xf8E4M3FN>, tensor<64x4xf8E4M3FN>
-//  CHECK-NOT:   i8
+// CHECK-SAME:     lhs = e2m1 rhs = e2m1
+// CHECK-SAME:     tensor<64x4xf8E4M3FN> * tensor<32x64xi8>, tensor<64x4xf8E4M3FN>
 //  CHECK-NOT:   rock.blockwise_gemm
 func.func @test_scaled_gemm_e4m3_scale(
-    %a: tensor<64x64xf8E4M3FN>, %b: tensor<64x64xf8E4M3FN>,
+    %a: tensor<64x32xi8>, %b: tensor<32x64xi8>,
     %c: tensor<64x64xf32>,
     %scaleA: tensor<64x4xf8E4M3FN>, %scaleB: tensor<64x4xf8E4M3FN>) -> tensor<64x64xf32>
     attributes {rock.arch = "gfx1250", rock.kernel} {
   %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
-    {quantBlockSize = 16 : i64}
-    : tensor<64x64xf8E4M3FN> scaled by tensor<64x4xf8E4M3FN>,
-      tensor<64x64xf8E4M3FN> scaled by tensor<64x4xf8E4M3FN>,
+    {quantBlockSize = 16 : i64,
+     matrixAOrigElemType = f4E2M1FN,
+     matrixBOrigElemType = f4E2M1FN}
+    : tensor<64x32xi8> scaled by tensor<64x4xf8E4M3FN>,
+      tensor<32x64xi8> scaled by tensor<64x4xf8E4M3FN>,
+      tensor<64x64xf32> -> tensor<64x64xf32>
+  return %result : tensor<64x64xf32>
+}
+
+// -----
+
+// Test: mixed fp8 x fp4 with E8M0 (i8) on the fp8 side and f8E4M3FN on the
+// fp4 side. The fp4 operand is K-packed i8. quantBlockSize 16 is the scale16
+// form of the same instruction.
+
+// CHECK-LABEL: @test_scaled_gemm_mixed_f8_f4_scale16
+// CHECK-SAME: (%[[A:.*]]: tensor<64x64xf8E4M3FN>, %[[B:.*]]: tensor<32x64xi8>, %[[C:.*]]: tensor<64x64xf32>, %[[SA:.*]]: tensor<64x4xi8>, %[[SB:.*]]: tensor<64x4xf8E4M3FN>)
+//      CHECK:   tt.dot_scaled %[[A]] scale %[[SA]], %[[B]] scale %[[SB]], %[[C]]
+// CHECK-SAME:     lhs = e4m3 rhs = e2m1
+// CHECK-SAME:     tensor<64x4xi8> * tensor<32x64xi8>, tensor<64x4xf8E4M3FN>
+//  CHECK-NOT:   rock.blockwise_gemm
+func.func @test_scaled_gemm_mixed_f8_f4_scale16(
+    %a: tensor<64x64xf8E4M3FN>, %b: tensor<32x64xi8>,
+    %c: tensor<64x64xf32>,
+    %scaleA: tensor<64x4xi8>, %scaleB: tensor<64x4xf8E4M3FN>) -> tensor<64x64xf32>
+    attributes {rock.arch = "gfx1250", rock.kernel} {
+  %result = rock.blockwise_gemm(%a scaled by %scaleA, %b scaled by %scaleB, %c)
+    {quantBlockSize = 16 : i64,
+     matrixBOrigElemType = f4E2M1FN}
+    : tensor<64x64xf8E4M3FN> scaled by tensor<64x4xi8>,
+      tensor<32x64xi8> scaled by tensor<64x4xf8E4M3FN>,
       tensor<64x64xf32> -> tensor<64x64xf32>
   return %result : tensor<64x64xf32>
 }
