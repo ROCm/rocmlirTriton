@@ -795,6 +795,64 @@ func.func @gemm_e4m3_scale_one_side_f8_f8_block_16(%a: tensor<64x128xf8E4M3FN>, 
   func.return
 }
 
+// The legal block-16 E4M3 pairs (cases T10 to T14 of
+// rocmlir-driver/scaled_wmma16_assembly.mlir) at quantBlockSize 32, cases NB10
+// to NB14. Each passes at block 16, so the block size alone causes the error.
+// This is an RMT limitation, not an ISA rule: gfx1250's v_wmma_scale takes
+// E4M3 scales on fp4 operands, and Triton runs these pairs at block 32. These
+// cases are expected to change if RMT adds E4M3 at block 32.
+
+// Case NB10. Mixed f8 x f4 with the E4M3 scale on the f4 side (T10 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f8_f4_block_32(%a: tensor<64x128xf8E4M3FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf8E4M3FN> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB11. As case NB10 with bf8 on the f8 side (T11 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_bf8_f4_block_32(%a: tensor<64x128xf8E5M2>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E8M0FNU>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf8E5M2> scaled by tensor<64x4xf8E8M0FNU> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB12. The mirror of case NB10: mixed f4 x f8, E4M3 scale on the f4
+// side (T12 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f4_f8_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E4M3FN>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf8E4M3FN> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB13. As case NB12 with bf8 on the f8 side (T13 at block 32).
+func.func @gemm_e4m3_scale_on_f4_side_of_f4_bf8_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf8E5M2>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E8M0FNU>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf8E5M2> scaled by tensor<32x4xf8E8M0FNU> -> tensor<64x32xf32>
+  func.return
+}
+
+// Case NB14. fp4 x fp4 with E4M3 scales on both sides (T14 at block 32).
+func.func @gemm_e4m3_scale_both_sides_f4_f4_block_32(%a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
+                                  %scaleA: tensor<64x4xf8E4M3FN>,
+                                  %scaleB: tensor<32x4xf8E4M3FN>) attributes {rock.arch = "gfx1250"} {
+  // expected-error @+1 {{f8E4M3FN scales require quantBlockSize 16}}
+  rock.gemm %a scaled by %scaleA * %b scaled by %scaleB {quantBlockSize = 32 : i64}
+    : tensor<64x128xf4E2M1FN> scaled by tensor<64x4xf8E4M3FN> * tensor<128x32xf4E2M1FN> scaled by tensor<32x4xf8E4M3FN> -> tensor<64x32xf32>
+  func.return
+}
+
 // kPerBlock in tuning params must be divisible by quantBlockSize
 func.func @gemm_kperblock_not_divisible_by_quantblocksize(
     %a: tensor<64x128xf4E2M1FN>, %b: tensor<128x32xf4E2M1FN>,
