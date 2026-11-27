@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -45,6 +46,26 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 #undef Gemm_DEFINITIONS_GEN
 // clang-format on
 
+/// LDS bits that one element of `operand` costs: the sum, over the kernel
+/// arguments an input fusion loads to produce it, of their element widths.
+/// Zero when there is no fusion to trace, or it can't be traced.
+static int64_t getInputFusionLdsBitsPerElem(Value operand) {
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(operand);
+  if (failed(paths))
+    return 0;
+  int64_t bits = 0;
+  for (const InputFusionPath &path : *paths) {
+    if (!isa<BlockArgument>(path.leaf))
+      continue;
+    Type elemType = getElementTypeOrSelf(path.leaf.getType());
+    if (!elemType.isIntOrFloat())
+      return 0;
+    bits += elemType.getIntOrFloatBitWidth();
+  }
+  return bits;
+}
+
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
@@ -58,8 +79,11 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   // element types come from the interface. `getScale{A,B}Type` returns the
   // shaped tensor type (or null if no scale operand), so peel off the
   // element type before storing.
-  if (auto gemmOp = dyn_cast<GemmOp>(*op))
+  if (auto gemmOp = dyn_cast<GemmOp>(*op)) {
     info.quantBlockSize = gemmOp.getQuantBlockSize();
+    info.aLdsBitsPerElem = getInputFusionLdsBitsPerElem(gemmOp.getA());
+    info.bLdsBitsPerElem = getInputFusionLdsBitsPerElem(gemmOp.getB());
+  }
   if (Type aScaleTy = op.getScaleAType())
     info.aScaleType = getElementTypeOrSelf(aScaleTy);
   if (Type bScaleTy = op.getScaleBType())
@@ -235,7 +259,8 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, /*supportsSplitK=*/true,
                           info.quantBlockSize, info.aScaleType, info.bScaleType,
-                          info.siblingGemms, info.problemKey));
+                          info.siblingGemms, info.problemKey,
+                          info.aLdsBitsPerElem, info.bLdsBitsPerElem));
 }
 
 FailureOr<GemmParamsAttr>
@@ -255,7 +280,8 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
     StringRef arch, bool supportsSplitK, std::optional<int64_t> quantBlockSize,
     Type aScaleType, Type bScaleType, ArrayRef<SiblingGemm> siblingGemms,
-    std::optional<QuickTuningProblemKey> problemKey) const {
+    std::optional<QuickTuningProblemKey> problemKey, int64_t aLdsBitsPerElem,
+    int64_t bLdsBitsPerElem) const {
   auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
       arch, opType, dataTypeA, supportsSplitK, problemKey);
 
@@ -278,9 +304,9 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     res.push_back(params);
   }
   auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
-    return isGemmParamsConservativelyApplicable(p, dataTypeA, dataTypeB, arch,
-                                                quantBlockSize, aScaleType,
-                                                bScaleType, siblingGemms);
+    return isGemmParamsConservativelyApplicable(
+        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType,
+        siblingGemms, aLdsBitsPerElem, bLdsBitsPerElem);
   });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
@@ -289,7 +315,8 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
   if (ordered.empty() ||
       !isGemmParamsConservativelyApplicable(
           ordered.front(), dataTypeA, dataTypeB, arch, quantBlockSize,
-          aScaleType, bScaleType, siblingGemms))
+          aScaleType, bScaleType, siblingGemms, aLdsBitsPerElem,
+          bLdsBitsPerElem))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmParams(
                        b.getContext(), quantBlockSize, dataTypeA, dataTypeB));

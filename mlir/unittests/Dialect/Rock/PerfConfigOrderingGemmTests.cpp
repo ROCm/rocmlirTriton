@@ -189,6 +189,24 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableLDSAtBoundary) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
 }
 
+// An input-fused `x + y` feeding A makes Triton stage an x tile and a y tile,
+// so A costs two f32 loads per element. 64x64x128 fp32 numStages=2 is
+// (32 KiB + 32 KiB) * 2 = 128 KiB without the fusion, which fits gfx950's
+// 160 KiB, but (2 * 32 KiB + 32 KiB) * 2 = 192 KiB with it, which doesn't.
+TEST(PerfConfigOrderingGemmTest, IsApplicableChargesInputFusionLoads) {
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(64, 64, 128, 1, 1, 4, 32, 1, 2, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx950"));
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
+      /*aLdsBitsPerElem=*/64, /*bLdsBitsPerElem=*/32));
+  // A fusion that loads no more than the element type, e.g. a unary op or a
+  // narrower type converted up, changes nothing.
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
+      /*aLdsBitsPerElem=*/16, /*bLdsBitsPerElem=*/32));
+}
+
 // --- sibling GEMMs (backward-data kernel IDs) ---
 
 // The kernel IDs of a stride-2 4x4 backward-data conv (the shape in
