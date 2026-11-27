@@ -476,6 +476,43 @@ foreach(_var
     list(APPEND _amd_codegen_build_args "-D${_var}=${${_var}}")
   endif()
 endforeach()
+
+# Forward the Windows BinSkim/CFG/Spectre/static-runtime flags computed in the
+# top-level CMakeLists.txt. amd_codegen_llvm_build and triton_amd_codegen are
+# each configured by ExternalProject_Add as a fully separate CMake invocation,
+# so they see none of this directory's add_compile_options()/add_link_options()
+# and must receive the equivalent flags as plain CMAKE_<LANG>_FLAGS/_LINKER_FLAGS.
+if(WIN32)
+  if(ROCMLIR_WIN_SECURITY_COMPILE_FLAGS)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_C_FLAGS=${ROCMLIR_WIN_SECURITY_COMPILE_FLAGS}"
+      "-DCMAKE_CXX_FLAGS=${ROCMLIR_WIN_SECURITY_COMPILE_FLAGS}")
+  endif()
+  if(ROCMLIR_WIN_SECURITY_LINK_FLAGS)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_EXE_LINKER_FLAGS=${ROCMLIR_WIN_SECURITY_LINK_FLAGS}"
+      "-DCMAKE_SHARED_LINKER_FLAGS=${ROCMLIR_WIN_SECURITY_LINK_FLAGS}")
+  endif()
+  if(CMAKE_MSVC_RUNTIME_LIBRARY)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}")
+  endif()
+  # CMAKE_<LANG>_FLAGS above only covers config-independent flags. Callers
+  # (e.g. UAI's default.json) also pin CMAKE_CXX_FLAGS_RELEASE/
+  # CMAKE_C_FLAGS_RELEASE on the top-level configure to control Release
+  # optimization flags; forward those too, or a Release build of
+  # triton_amd_codegen.dll and its private LLVM silently falls back to
+  # CMake's own Release defaults instead of the caller's flags.
+  if(CMAKE_CXX_FLAGS_RELEASE)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_CXX_FLAGS_RELEASE=${CMAKE_CXX_FLAGS_RELEASE}")
+  endif()
+  if(CMAKE_C_FLAGS_RELEASE)
+    list(APPEND _amd_codegen_tool_args
+      "-DCMAKE_C_FLAGS_RELEASE=${CMAKE_C_FLAGS_RELEASE}")
+  endif()
+endif()
+
 set(triton_amd_codegen_libname "${CMAKE_SHARED_LIBRARY_PREFIX}triton_amd_codegen${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
 ExternalProject_Add(amd_codegen_llvm_build
