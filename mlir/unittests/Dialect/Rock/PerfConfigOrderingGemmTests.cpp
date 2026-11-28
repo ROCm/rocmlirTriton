@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Rock/IR/Rock.h"
 #include "mlir/Dialect/Rock/Tuning/GridwiseGemmParams.h"
@@ -189,24 +190,6 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableLDSAtBoundary) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
 }
 
-// An input-fused `x + y` feeding A makes Triton stage an x tile and a y tile,
-// so A costs two f32 loads per element. 64x64x128 fp32 numStages=2 is
-// (32 KiB + 32 KiB) * 2 = 128 KiB without the fusion, which fits gfx950's
-// 160 KiB, but (2 * 32 KiB + 32 KiB) * 2 = 192 KiB with it, which doesn't.
-TEST(PerfConfigOrderingGemmTest, IsApplicableChargesInputFusionLoads) {
-  GemmOrderingTestEnv e;
-  auto p = e.gemm(64, 64, 128, 1, 1, 4, 32, 1, 2, 0, 0);
-  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx950"));
-  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
-      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
-      /*aLdsBitsPerElem=*/64, /*bLdsBitsPerElem=*/32));
-  // A fusion that loads no more than the element type, e.g. a unary op or a
-  // narrower type converted up, changes nothing.
-  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
-      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
-      /*aLdsBitsPerElem=*/16, /*bLdsBitsPerElem=*/32));
-}
-
 // --- sibling GEMMs (backward-data kernel IDs) ---
 
 // The kernel IDs of a stride-2 4x4 backward-data conv (the shape in
@@ -232,6 +215,114 @@ TEST(PerfConfigOrderingGemmTest, IsApplicableChargesFusedSiblingATiles) {
   EXPECT_TRUE(isGemmParamsConservativelyApplicable(boundary, e.f32, e.f32,
                                                    "gfx942", std::nullopt,
                                                    nullptr, nullptr, siblings));
+}
+
+// --- input fusions that load several tensors per operand ---
+
+// Triton's pipeliner gives each load feeding the dot its own LDS tile per
+// stage. `add(x, y) * z` in f32 on gfx950 (160 KiB) motivated this: for
+// 64x64x128 numStages=2 the A + B estimate is 128 KiB, but Triton allocates
+// (2 A + B) * 2 = 192 KiB.
+TEST(PerfConfigOrderingGemmTest, IsApplicableChargesFusedInputLoads) {
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(64, 64, 128, 1, 1, 4, 32, 1, 2, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx950"));
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
+      /*aLoadElemBits=*/64, /*bLoadElemBits=*/32));
+
+  // A load width below the element width (e.g. a single i4 load dequantized to
+  // f32) still charges one tile of the element type, as before.
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
+      /*aLoadElemBits=*/4, /*bLoadElemBits=*/0));
+}
+
+// numStages=1 is not pipelined, but every load still passes through LDS once to
+// reach the dot-operand layout. Charging all of them bounds the case where
+// those buffers are live at once: (2 A + B) * 1 = 96 KiB here.
+TEST(PerfConfigOrderingGemmTest, IsApplicableChargesFusedInputLoadsOneStage) {
+  GemmOrderingTestEnv e;
+  auto p = e.gemm(64, 64, 128, 1, 1, 4, 32, 1, 1, 0, 0);
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx950", std::nullopt, nullptr, nullptr, {},
+      /*aLoadElemBits=*/64, /*bLoadElemBits=*/32));
+  // gfx942 has 64 KiB: A + B fits exactly, 2 A + B does not.
+  EXPECT_TRUE(isGemmParamsConservativelyApplicable(p, e.f32, e.f32, "gfx942"));
+  EXPECT_FALSE(isGemmParamsConservativelyApplicable(
+      p, e.f32, e.f32, "gfx942", std::nullopt, nullptr, nullptr, {},
+      /*aLoadElemBits=*/64, /*bLoadElemBits=*/32));
+}
+
+// Production wiring: `fromOp` charges one load per kernel argument or dense
+// non-splat constant the operand reads, as rock-regularize-input creates them,
+// and none for splats.
+TEST(PerfConfigOrderingGemmTest, FromOpSumsFusedInputLoadBits) {
+  MLIRContext ctx;
+  DialectRegistry reg;
+  reg.insert<rock::RockDialect, func::FuncDialect, arith::ArithDialect>();
+  ctx.appendDialectRegistry(reg);
+  ctx.loadAllAvailableDialects();
+
+  const char *ir = R"mlir(
+    module attributes {rock.arch = "amdgcn-amd-amdhsa:gfx950"} {
+      func.func @plain(%a: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>)
+          -> tensor<1x4x4xf32> {
+        %0 = rock.gemm %a * %b : tensor<1x4x4xf32> * tensor<1x4x4xf32>
+          -> tensor<1x4x4xf32>
+        return %0 : tensor<1x4x4xf32>
+      }
+      func.func @addA(%x: tensor<1x4x4xf32>, %y: tensor<1x4x4xf32>,
+                      %b: tensor<1x4x4xf32>) -> tensor<1x4x4xf32> {
+        %a = arith.addf %x, %y : tensor<1x4x4xf32>
+        %0 = rock.gemm %a * %b : tensor<1x4x4xf32> * tensor<1x4x4xf32>
+          -> tensor<1x4x4xf32>
+        return %0 : tensor<1x4x4xf32>
+      }
+      func.func @mixedB(%a: tensor<1x4x4xf32>, %x: tensor<1x4x4xf16>,
+                        %y: tensor<1x4x4xf32>) -> tensor<1x4x4xf32> {
+        %e = arith.extf %x : tensor<1x4x4xf16> to tensor<1x4x4xf32>
+        %b = arith.mulf %e, %y : tensor<1x4x4xf32>
+        %0 = rock.gemm %a * %b : tensor<1x4x4xf32> * tensor<1x4x4xf32>
+          -> tensor<1x4x4xf32>
+        return %0 : tensor<1x4x4xf32>
+      }
+      func.func @addSplat(%x: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>)
+          -> tensor<1x4x4xf32> {
+        %c = arith.constant dense<1.0> : tensor<1x4x4xf32>
+        %a = arith.addf %x, %c : tensor<1x4x4xf32>
+        %0 = rock.gemm %a * %b : tensor<1x4x4xf32> * tensor<1x4x4xf32>
+          -> tensor<1x4x4xf32>
+        return %0 : tensor<1x4x4xf32>
+      }
+      func.func @addDense(%x: tensor<1x4x4xf32>, %b: tensor<1x4x4xf32>)
+          -> tensor<1x4x4xf32> {
+        %c = arith.constant dense<[[[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0],
+                                    [1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]]]>
+          : tensor<1x4x4xf32>
+        %a = arith.addf %x, %c : tensor<1x4x4xf32>
+        %0 = rock.gemm %a * %b : tensor<1x4x4xf32> * tensor<1x4x4xf32>
+          -> tensor<1x4x4xf32>
+        return %0 : tensor<1x4x4xf32>
+      }
+    }
+  )mlir";
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(ir, &ctx);
+  ASSERT_TRUE(module);
+
+  using Bits = std::pair<int64_t, int64_t>;
+  auto loadBits = [&](StringRef funcName) {
+    auto func = module->lookupSymbol<func::FuncOp>(funcName);
+    GemmOp gemm = *func.getBody().getOps<GemmOp>().begin();
+    PopulateParamsInfo info = PopulateParamsInfo::fromOp(
+        cast<RockGemmWrapperInterface>(gemm.getOperation()));
+    return Bits(info.aLoadElemBits, info.bLoadElemBits);
+  };
+  EXPECT_EQ(loadBits("plain"), Bits(32, 32));
+  EXPECT_EQ(loadBits("addA"), Bits(64, 32));
+  EXPECT_EQ(loadBits("mixedB"), Bits(32, 48));
+  EXPECT_EQ(loadBits("addSplat"), Bits(32, 32));
+  EXPECT_EQ(loadBits("addDense"), Bits(64, 32));
 }
 
 // Siblings that read different views of B keep one B tile each.
