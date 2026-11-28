@@ -95,7 +95,14 @@ struct PopulateParamsInfo {
   // for ops that lower to a single GEMM.
   SmallVector<SiblingGemm> siblingGemms;
   std::optional<QuickTuningProblemKey> problemKey;
-
+  // LDS bits one element of the A (B) tile costs per stage, summed over every
+  // tensor the operand's input fusion loads (kernel arguments and dense
+  // non-splat constants): Triton's pipeliner gives each `tt.load` feeding the
+  // dot its own multi-buffered LDS allocation, so `add(x, y) * z` keeps two A
+  // tiles per stage live. Zero (the default, and the value for ops whose
+  // operands are not walked) means "one load of the operand's element type".
+  int64_t aLoadElemBits = 0;
+  int64_t bLoadElemBits = 0;
   PopulateParamsInfo(GemmSize gemmSize, StringRef arch, Type gemmAType,
                      Type gemmBType, KernelType kernelType)
       : gemmSize(gemmSize), arch(arch), gemmAType(gemmAType),
@@ -166,11 +173,17 @@ inline int64_t fusedSiblingTileBits(ArrayRef<SiblingGemm> siblingGemms,
 /// For ops that lower to several GEMMs in one kernel, pass them as
 /// `siblingGemms` so the budget covers every tile they keep live at once (see
 /// `fusedSiblingTileBits`).
+///
+/// For operands built by an input fusion that loads several kernel arguments,
+/// pass `aLoadElemBits` / `bLoadElemBits` (see `PopulateParamsInfo`) so each
+/// loaded tile is charged. Values below the operand's element width, including
+/// the default 0, charge one tile of the element type.
 inline bool isGemmParamsConservativelyApplicable(
     GemmParamsAttr p, Type aElemType, Type bElemType, StringRef arch,
     std::optional<int64_t> quantBlockSize = std::nullopt,
     Type aScaleType = nullptr, Type bScaleType = nullptr,
-    ArrayRef<SiblingGemm> siblingGemms = {}) {
+    ArrayRef<SiblingGemm> siblingGemms = {}, int64_t aLoadElemBits = 0,
+    int64_t bLoadElemBits = 0) {
   if (p.getKpack() != 1 || p.getSplitKFactor() != 1 || p.getNumCTAs() != 1)
     return false;
   if (quantBlockSize.has_value() && p.getKPerBlock() % *quantBlockSize != 0)
@@ -193,9 +206,11 @@ inline bool isGemmParamsConservativelyApplicable(
       p.getKPerBlock() % kFp4KPerBlockMultiple != 0)
     return false;
   int64_t aTileBits =
-      p.getMPerBlock() * p.getKPerBlock() * aElem.getIntOrFloatBitWidth();
+      p.getMPerBlock() * p.getKPerBlock() *
+      std::max<int64_t>(aLoadElemBits, aElem.getIntOrFloatBitWidth());
   int64_t bTileBits =
-      p.getNPerBlock() * p.getKPerBlock() * bElem.getIntOrFloatBitWidth();
+      p.getNPerBlock() * p.getKPerBlock() *
+      std::max<int64_t>(bLoadElemBits, bElem.getIntOrFloatBitWidth());
   if (quantBlockSize.has_value() && (aScaleType || bScaleType)) {
     int64_t scaleK = llvm::divideCeil(p.getKPerBlock(), *quantBlockSize);
     if (aScaleType) {
@@ -314,14 +329,17 @@ public:
   // tuning list. Pass `quantBlockSize` / `aScaleType` / `bScaleType` for
   // block-scaled (MXFP-style) GEMMs so the applicability check accounts for
   // scale-tile LDS use and the `kPerBlock % quantBlockSize == 0` constraint.
-  // Pass `siblingGemms` for ops that lower to several GEMMs in one kernel.
+  // Pass `siblingGemms` for ops that lower to several GEMMs in one kernel, and
+  // `aLoadElemBits` / `bLoadElemBits` for input fusions that load several
+  // kernel arguments per operand (see `PopulateParamsInfo`).
   std::vector<GemmParamsAttr> getTuningParameters(
       OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
       StringRef arch, bool supportsSplitK,
       std::optional<int64_t> quantBlockSize = std::nullopt,
       Type aScaleType = nullptr, Type bScaleType = nullptr,
       ArrayRef<SiblingGemm> siblingGemms = {},
-      std::optional<QuickTuningProblemKey> problemKey = std::nullopt) const;
+      std::optional<QuickTuningProblemKey> problemKey = std::nullopt,
+      int64_t aLoadElemBits = 0, int64_t bLoadElemBits = 0) const;
 
   LogicalResult couldBePerformant(const PopulateParamsInfo &info,
                                   GemmParamsAttr params) override;

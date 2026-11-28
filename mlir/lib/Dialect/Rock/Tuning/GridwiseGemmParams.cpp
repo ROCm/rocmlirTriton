@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Rock/IR/RockTuningParamAttrInterface.h"
 #include "mlir/Dialect/Rock/Tuning/ConvContext.h"
 #include "mlir/Dialect/Rock/utility/loweringUtils.h"
+#include "mlir/Dialect/Rock/utility/transformMapUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -45,6 +46,40 @@ llvm::raw_ostream &mlir::rock::operator<<(llvm::raw_ostream &os,
 #undef Gemm_DEFINITIONS_GEN
 // clang-format on
 
+/// LDS bits per tile element that loading `operand` costs per stage: the
+/// element widths of the tensors its input fusion reads, one per load. This
+/// mirrors rock-regularize-input, which gives every kernel argument and dense
+/// non-splat constant leaf its own load and rematerializes splat constants in
+/// registers. Triton's pipeliner then gives each such load its own LDS tile.
+///
+/// Broadcast leaves are charged a full tile, although rock-narrow-redundant-
+/// loads usually shrinks them later: over-charging only rejects configs that
+/// would have fit.
+///
+/// If the fusion DAG cannot be walked, or a leaf has no bit width, charge two
+/// loads of the operand's element type. rock-regularize-input fails on the
+/// same IR, so this only matters if the IR changes before that pass runs.
+static int64_t getFusedLoadElemBits(Value operand) {
+  Type operandElem = getElementTypeOrSelf(operand.getType());
+  int64_t unknownBits =
+      operandElem.isIntOrFloat() ? 2 * operandElem.getIntOrFloatBitWidth() : 0;
+  FailureOr<SmallVector<InputFusionPath>> paths =
+      collectInputFusionPaths(operand);
+  if (failed(paths))
+    return unknownBits;
+  int64_t bits = 0;
+  for (const InputFusionPath &path : *paths) {
+    if (!isa<BlockArgument>(path.leaf) &&
+        !rock::isDenseNonSplatConstant(path.leaf))
+      continue;
+    Type elem = getElementTypeOrSelf(path.leaf.getType());
+    if (!elem.isIntOrFloat())
+      return std::max(bits, unknownBits);
+    bits += elem.getIntOrFloatBitWidth();
+  }
+  return bits;
+}
+
 PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   PopulateParamsInfo info{op.getGemmSize(), rock::getArchValue(op),
                           op.getAType(), op.getBType(), op.getKernelType()};
@@ -58,8 +93,13 @@ PopulateParamsInfo PopulateParamsInfo::fromOp(RockGemmWrapperInterface op) {
   // element types come from the interface. `getScale{A,B}Type` returns the
   // shaped tensor type (or null if no scale operand), so peel off the
   // element type before storing.
-  if (auto gemmOp = dyn_cast<GemmOp>(*op))
+  if (auto gemmOp = dyn_cast<GemmOp>(*op)) {
     info.quantBlockSize = gemmOp.getQuantBlockSize();
+    // Conv ops are left alone: their A/B are views of filter/input/output
+    // chosen by direction, and MIGraphX input fusions reach here as rock.gemm.
+    info.aLoadElemBits = getFusedLoadElemBits(gemmOp.getA());
+    info.bLoadElemBits = getFusedLoadElemBits(gemmOp.getB());
+  }
   if (Type aScaleTy = op.getScaleAType())
     info.aScaleType = getElementTypeOrSelf(aScaleTy);
   if (Type bScaleTy = op.getScaleBType())
@@ -235,7 +275,8 @@ FailureOr<GemmParamsAttr> PopulateParams::obtainTuningParameters(
       getTuningParameters(b, info.kernelType, info.gemmAType, info.gemmBType,
                           info.arch, /*supportsSplitK=*/true,
                           info.quantBlockSize, info.aScaleType, info.bScaleType,
-                          info.siblingGemms, info.problemKey));
+                          info.siblingGemms, info.problemKey,
+                          info.aLoadElemBits, info.bLoadElemBits));
 }
 
 FailureOr<GemmParamsAttr>
@@ -255,7 +296,8 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     OpBuilder &b, KernelType opType, Type dataTypeA, Type dataTypeB,
     StringRef arch, bool supportsSplitK, std::optional<int64_t> quantBlockSize,
     Type aScaleType, Type bScaleType, ArrayRef<SiblingGemm> siblingGemms,
-    std::optional<QuickTuningProblemKey> problemKey) const {
+    std::optional<QuickTuningProblemKey> problemKey, int64_t aLoadElemBits,
+    int64_t bLoadElemBits) const {
   auto perfConfigs = ParamLookupTable<GemmParamsAttr>::lookup(
       arch, opType, dataTypeA, supportsSplitK, problemKey);
 
@@ -278,9 +320,9 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
     res.push_back(params);
   }
   auto ordered = orderParams<GemmParamsAttr>(res, [&](GemmParamsAttr p) {
-    return isGemmParamsConservativelyApplicable(p, dataTypeA, dataTypeB, arch,
-                                                quantBlockSize, aScaleType,
-                                                bScaleType, siblingGemms);
+    return isGemmParamsConservativelyApplicable(
+        p, dataTypeA, dataTypeB, arch, quantBlockSize, aScaleType, bScaleType,
+        siblingGemms, aLoadElemBits, bLoadElemBits);
   });
   // Guarantee MIGRAPHX_SKIP_BENCHMARKING consumers see an applicable
   // `front()`: if no table entry passed the check, prepend the conservative
@@ -289,7 +331,7 @@ std::vector<GemmParamsAttr> PopulateParams::getTuningParameters(
   if (ordered.empty() ||
       !isGemmParamsConservativelyApplicable(
           ordered.front(), dataTypeA, dataTypeB, arch, quantBlockSize,
-          aScaleType, bScaleType, siblingGemms))
+          aScaleType, bScaleType, siblingGemms, aLoadElemBits, bLoadElemBits))
     ordered.insert(ordered.begin(),
                    getConservativeDefaultGemmParams(
                        b.getContext(), quantBlockSize, dataTypeA, dataTypeB));
